@@ -1,0 +1,16 @@
+// Calendrier des tournois à cadence lente (adresse calendrier-ffe.<compte>.workers.dev).
+{
+  "name": "calendrier-ffe",
+  "main": "src/worker.js",
+  "compatibility_date": "2026-01-01",
+  // Copies des pages FFE (l'espace KV est créé automatiquement au premier déploiement, puis réutilisé)
+  "kv_namespaces": [{ "binding": "CACHE" }],
+  // Toutes les 5 min : le code ne lance qu'un cycle par nuit, de 00h00 à 01h55 UTC (01h/02h à Paris selon la saison),
+  // et un premier cycle dès le déploiement. Hors cycle, un passage se limite à une lecture KV.
+  "triggers": { "crons": ["*/5 * * * *"] },
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS",
+    "run_worker_first": ["/api/*", "/manifest.webmanifest"]
+  }
+}
