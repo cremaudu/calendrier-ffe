@@ -177,9 +177,29 @@ function config(env) {
 /* ---------- Tâche planifiée ----------
    Déclenchée toutes les 5 min, elle ne lance qu'un cycle par nuit (00h00-01h55 UTC), plus un tout premier
    dès le déploiement. Un cycle : les pages de la liste (la 1re en lecture simple, les suivantes par postback
-   sur le formulaire de la 1re), puis les fiches nouvelles ou lues il y a plus d'une semaine. 4 pages par passage. */
+   sur le formulaire de la 1re), puis les fiches nouvelles ou lues il y a plus d'une semaine, et la liste des joueurs
+   du club si elle a plus d'une semaine (la nuit, le site FFE répond vite). 4 pages par passage. */
 const PAR_PASSAGE = 4;
 const FICHE_VALIDE = 7 * 86400000;
+const CLUB_VALIDE = 7 * 86400000;
+
+// Une page de la liste des joueurs du club (config.js : club) : la 1re en lecture simple, les suivantes par postback
+// sur son formulaire. Liste complète : clé club (noms normalisés par cle(), date de lecture en metadata).
+async function pageClub(env, cfg, e, n) {
+  let html;
+  if (n === 1) { html = await lireFFE(pClub(cfg.club)); e.formClub = champsForm(html); e.lus = []; }
+  else {
+    const body = new URLSearchParams(e.formClub);
+    body.set('__EVENTTARGET', 'ctl00$ContentPlaceHolderMain$PagerHeader');
+    body.set('__EVENTARGUMENT', String(n));
+    html = await lireFFE(pClub(cfg.club), body);
+  }
+  const c = parseClub(html);
+  if (!c.noms.length) throw new Error('liste du club vide');
+  e.lus.push(...c.noms.map(cle));
+  if (c.suite && n < 20) e.file.splice(1, 0, 'club:' + (n + 1));
+  else { await env.CACHE.put('club', JSON.stringify(e.lus), { metadata: { t: Date.now() } }); delete e.formClub; delete e.lus; }
+}
 const JOURS_FICHE = 120; // une fiche non relue disparaît de KV au bout de 4 mois (tournoi passé)
 
 export async function recharger(env, maintenant = Date.now()) {
@@ -217,6 +237,10 @@ export async function recharger(env, maintenant = Date.now()) {
             const f = await env.CACHE.getWithMetadata('f:' + t.ref);
             if (!f.value || maintenant - (f.metadata?.t ?? 0) > FICHE_VALIDE) e.file.push('fiche:' + t.ref);
           }
+          if (cfg.club) {
+            const club = await env.CACHE.getWithMetadata('club');
+            if (!club.value || maintenant - (club.metadata?.t ?? 0) > CLUB_VALIDE) e.file.push('club:1');
+          }
           e.lignes = [];
           delete e.form;
           change = true;
@@ -225,6 +249,8 @@ export async function recharger(env, maintenant = Date.now()) {
         const f = parseFiche(await lireFFE(pFiche(arg)));
         await env.CACHE.put('f:' + arg, JSON.stringify(f), { metadata: { t: Date.now() }, expirationTtl: JOURS_FICHE * 86400 });
         change = true;
+      } else if (type === 'club') {
+        await pageClub(env, cfg, e, +arg);
       }
       e.file.shift();
       e.faits++;
@@ -252,9 +278,10 @@ const plus7 = (iso) => new Date(Date.parse(iso + 'T12:00:00Z') + 7 * 86400000).t
 export const enCours = (t, auj) => !!t.debut && t.debut <= auj && auj <= plus7(t.fiche?.fin || t.debut);
 
 /* ---------- Suivi du soir ----------
-   Chaque jour à 20h (Paris), un cycle relit les joueurs du club (config.js : club), puis pour chaque tournoi
-   en cours le classement et les rondes pas encore terminées ; seules les lignes des joueurs du club sont gardées
-   (clé r:<ref>). Même rythme que la nuit : 4 pages par passage, 3 essais par page. */
+   Chaque jour à 20h (Paris), un cycle relit pour chaque tournoi en cours le classement et les rondes pas encore
+   terminées ; seules les lignes des joueurs du club sont gardées (clé r:<ref>). Les joueurs du club viennent de la
+   clé club, relue chaque semaine par le cycle de nuit ; tant qu'elle n'existe pas, ce cycle la lit d'abord.
+   Même rythme que la nuit : 4 pages par passage, 3 essais par page. */
 const JOURS_RESULTATS = 60;
 
 export async function suivre(env, maintenant = Date.now()) {
@@ -266,7 +293,8 @@ export async function suivre(env, maintenant = Date.now()) {
   // (sauf s'il tombe déjà dans la fenêtre du soir)
   const soir = p.heure >= 20 && p.heure < 22;
   if (!e || (soir && e.jour !== p.jour)) {
-    e = { debut: maintenant, jour: e || soir ? p.jour : '', file: ['club:1', 'suivi'], joueurs: [], res: {}, rondes: {}, faits: 0, echecs: {} };
+    const file = (await env.CACHE.get('club')) == null ? ['club:1', 'suivi'] : ['suivi'];
+    e = { debut: maintenant, jour: e || soir ? p.jour : '', file, joueurs: [], res: {}, rondes: {}, faits: 0, echecs: {} };
   }
   if (!e.file.length) return { reste: 0, faits: e.faits, actif: false };
   const membres = (r) => new Set([...e.joueurs, ...(r?.noms ?? [])]);
@@ -275,23 +303,9 @@ export async function suivre(env, maintenant = Date.now()) {
     const [type, arg, n] = item.split(':');
     try {
       if (type === 'club') {
-        // Page 1 en lecture simple, les suivantes par postback sur son formulaire
-        let html;
-        if (+arg === 1) { html = await lireFFE(pClub(cfg.club)); e.form = champsForm(html); e.lus = []; }
-        else {
-          const body = new URLSearchParams(e.form);
-          body.set('__EVENTTARGET', 'ctl00$ContentPlaceHolderMain$PagerHeader');
-          body.set('__EVENTARGUMENT', arg);
-          html = await lireFFE(pClub(cfg.club), body);
-        }
-        const c = parseClub(html);
-        if (!c.noms.length) throw new Error('liste du club vide');
-        e.lus.push(...c.noms.map(cle));
-        if (c.suite && +arg < 20) e.file.splice(1, 0, 'club:' + (+arg + 1));
-        else { e.joueurs = e.lus; e.clubOk = true; delete e.form; delete e.lus; await env.CACHE.put('club', JSON.stringify(e.joueurs)); }
+        await pageClub(env, cfg, e, +arg); // pas encore de liste du club (premier déploiement)
       } else if (type === 'suivi') {
-        // Liste du club illisible ce soir : celle d'un soir précédent
-        if (!e.clubOk) e.joueurs = (await env.CACHE.get('club', 'json')) ?? [];
+        e.joueurs = (await env.CACHE.get('club', 'json')) ?? [];
         const cal = await env.CACHE.get('calendrier', 'json');
         for (const t of cal?.tournois ?? []) if (enCours(t, p.jour)) { e.file.push('cl:' + t.ref); e.rondes[t.ref] = +(t.fiche?.rondes ?? 0); }
       } else if (type === 'cl') {
