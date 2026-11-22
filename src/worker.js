@@ -28,6 +28,9 @@ export const LIGUES = {
   PDL: ['Pays de la Loire', '44 49 53 72 85'],
 };
 
+// Ligue de chaque département métropolitain (tournois hors des ligues de config.js)
+const LIGUE_DEP = Object.fromEntries(Object.entries(LIGUES).flatMap(([code, [, deps]]) => deps.split(' ').map((d) => [d, code])));
+
 const MOIS = ['janvier', 'fevrier', 'mars', 'avril', 'mai', 'juin', 'juillet', 'aout', 'septembre', 'octobre', 'novembre', 'decembre'];
 const sansAccent = (s) => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
 // « 21 », « novembre », « 2026 » → « 2026-11-21 » ('' si illisible)
@@ -170,7 +173,8 @@ function config(env) {
     const ligueDe = {};
     for (const c of ligues) for (const d of LIGUES[c][1].split(' ')) ligueDe[d] = c;
     const club = +(js.match(/^\s*club:\s*(\d+)/m)?.[1] ?? 0);
-    return { appli: chaine('appli') ?? 'Calendrier FFE', entete: chaine('entete') ?? '#161616', ligues, ligueDe, club, clubNom: chaine('clubNom') ?? '', debutSaison: chaine('debutSaison') ?? '09-01' };
+    const horsLigues = js.match(/^\s*horsLigues:\s*(true|false)/m)?.[1] !== 'false';
+    return { appli: chaine('appli') ?? 'Calendrier FFE', entete: chaine('entete') ?? '#161616', ligues, ligueDe, club, clubNom: chaine('clubNom') ?? '', debutSaison: chaine('debutSaison') ?? '09-01', horsLigues };
   })());
 }
 
@@ -178,7 +182,11 @@ function config(env) {
    Déclenchée toutes les 5 min, elle ne lance qu'un cycle par nuit (00h00-01h55 UTC), plus un tout premier
    dès le déploiement. Un cycle : les pages de la liste (la 1re en lecture simple, les suivantes par postback
    sur le formulaire de la 1re), puis les fiches nouvelles ou lues il y a plus d'une semaine, et la liste des joueurs
-   du club si elle a plus d'une semaine (la nuit, le site FFE répond vite). 4 pages par passage. */
+   du club si elle a plus d'une semaine (la nuit, le site FFE répond vite). 4 pages par passage.
+   Hors des ligues de config.js (horsLigues) : un tournoi de la liste nationale qui commence le jour même ou le
+   lendemain est retenu (clé hors), car il quitte la liste FFE dès qu'il a commencé. Une fois commencé, son classement
+   est lu chaque nuit tant qu'aucun joueur du club n'y figure ; s'il en compte, il est suivi comme les autres
+   (rondes, suivi de 20h, bouton « Actualiser ») et apparaît dans « En cours », puis « Terminés ». */
 const PAR_PASSAGE = 4;
 const FICHE_VALIDE = 7 * 86400000;
 const CLUB_VALIDE = 7 * 86400000;
@@ -207,7 +215,9 @@ export async function recharger(env, maintenant = Date.now()) {
   let e = await env.CACHE.get('cron:etat', 'json');
   const jour = (t) => new Date(t).toISOString().slice(0, 10);
   const nuit = new Date(maintenant).getUTCHours() < 2;
-  if (!e || (nuit && jour(e.debut) !== jour(maintenant))) e = { debut: maintenant, file: ['liste:1'], lignes: [], faits: 0, echecs: {} };
+  if (!e || (nuit && jour(e.debut) !== jour(maintenant))) e = { debut: maintenant, file: ['liste:1'], lignes: [], horsLignes: [], res: {}, rondes: {}, faits: 0, echecs: {} };
+  e.horsLignes ??= []; e.res ??= {}; e.rondes ??= {}; // cycle commencé par une version précédente
+  const auj = paris(maintenant).jour, demain = plusJours(auj, 1);
   if (!e.file.length) return { reste: 0, faits: e.faits, actif: false }; // rien à faire : pas d'écriture KV
   let change = false;
   for (let i = 0; i < PAR_PASSAGE && e.file.length; i++) {
@@ -229,6 +239,7 @@ export async function recharger(env, maintenant = Date.now()) {
         const { tournois, suite } = parseListe(html);
         if (!tournois.length) throw new Error('liste vide');
         e.lignes.push(...tournois.filter((t) => cfg.ligueDe[t.dep]));
+        if (cfg.club && cfg.horsLigues) e.horsLignes.push(...tournois.filter((t) => !cfg.ligueDe[t.dep] && t.debut && t.debut <= demain));
         if (suite && n < 30) e.file.push('liste:' + (n + 1));
         else {
           // Liste complète : elle remplace la précédente (une liste incomplète ne remplace rien)
@@ -241,7 +252,9 @@ export async function recharger(env, maintenant = Date.now()) {
             const club = await env.CACHE.getWithMetadata('club');
             if (!club.value || maintenant - (club.metadata?.t ?? 0) > CLUB_VALIDE) e.file.push('club:1');
           }
+          if (cfg.club && cfg.horsLigues) await retenirHors(env, e, auj, maintenant);
           e.lignes = [];
+          e.horsLignes = [];
           delete e.form;
           change = true;
         }
@@ -251,7 +264,7 @@ export async function recharger(env, maintenant = Date.now()) {
         change = true;
       } else if (type === 'club') {
         await pageClub(env, cfg, e, +arg);
-      }
+      } else await itemResultats(env, cfg, e, item); // classement et rondes des tournois hors ligues
       e.file.shift();
       e.faits++;
     } catch (err) {
@@ -261,10 +274,64 @@ export async function recharger(env, maintenant = Date.now()) {
       if (e.echecs[item] < 3) e.file.push(item);
     }
   }
+  // Fin du cycle : résultats des tournois hors ligues qui comptent des joueurs du club (les autres ne sont pas gardés)
+  if (!e.file.length && Object.keys(e.res ?? {}).length) {
+    for (const [ref, r] of Object.entries(e.res)) if (avecClub(r)) await env.CACHE.put('r:' + ref, JSON.stringify(r), { expirationTtl: JOURS_RESULTATS * 86400 });
+    e.res = {};
+    change = true;
+  }
   if (change) await publier(env, cfg, maintenant);
   e.maj = maintenant;
   await env.CACHE.put('cron:etat', JSON.stringify(e));
   return { reste: e.file.length, faits: e.faits, actif: true };
+}
+
+// Tournois hors ligues retenus (clé hors) : ceux de la liste du jour qui commencent aujourd'hui ou demain, plus ceux
+// déjà retenus et encore en cours. Fiches à lire, puis classement de ceux qui ont commencé sans joueur du club repéré.
+async function retenirHors(env, e, auj, maintenant) {
+  const hors = new Map(((await env.CACHE.get('hors', 'json')) ?? []).map((h) => [h.ref, h]));
+  for (const t of e.horsLignes) hors.set(t.ref, t);
+  const garder = [];
+  for (const h of hors.values()) {
+    const f = await env.CACHE.getWithMetadata('f:' + h.ref, 'json');
+    // Terminé depuis plus de 7 jours (ou fiche introuvable depuis 2 mois) : plus à suivre
+    if (h.debut <= auj && (f.value ? !enCours({ ...h, fiche: f.value }, auj) : h.debut < plusJours(auj, -60))) continue;
+    garder.push(h);
+    if (!f.value || maintenant - (f.metadata?.t ?? 0) > FICHE_VALIDE) e.file.push('fiche:' + h.ref);
+    if (h.debut <= auj && !avecClub(await env.CACHE.get('r:' + h.ref, 'json'))) e.file.push('cl:' + h.ref);
+  }
+  await env.CACHE.put('hors', JSON.stringify(garder));
+}
+const plusJours = (iso, n) => new Date(Date.parse(iso + 'T12:00:00Z') + n * 86400000).toISOString().slice(0, 10);
+
+// Classement (cl:<ref>) ou ronde (ronde:<ref>:<n>) d'un tournoi suivi, pour le suivi du soir et, hors ligues, la nuit.
+// Résultats du club gardés dans e.res jusqu'à la fin du cycle. Joueurs du club : clé club, lue au premier besoin.
+async function itemResultats(env, cfg, e, item) {
+  const [type, ref, n] = item.split(':');
+  e.joueurs ??= (await env.CACHE.get('club', 'json')) ?? [];
+  const membres = (r) => new Set([...e.joueurs, ...(r?.noms ?? [])]);
+  if (type === 'cl') {
+    const c = parseClassement(await lireFFE(pResultats(ref, 'Cl')));
+    const avant = await env.CACHE.get('r:' + ref, 'json');
+    if (!c) { e.res[ref] = { t: Date.now(), absent: true }; return; }
+    e.rondes[ref] ??= +((await env.CACHE.get('f:' + ref, 'json'))?.rondes ?? 0);
+    const total = Math.max(e.rondes[ref] || 0, c.ronde + 1, avant?.rondes?.length ?? 0);
+    const r = {
+      t: Date.now(), clLu: Date.now(), total, ...classementClub(c, membres(), cfg.clubNom),
+      rondes: Array.from({ length: total }, (_, k) => avant?.rondes?.[k] ?? { n: k + 1, etat: 'avenir', parties: [] }),
+    };
+    e.res[ref] = r;
+    // Rondes à relire : jusqu'à celle qui suit la dernière jouée, sauf celles déjà terminées.
+    // Classement publié sans joueur du club : rien à suivre (sauf avant la 1re ronde, où il est encore vide).
+    if (r.noms.length || !c.ronde) {
+      const aLire = [];
+      for (let k = 1; k <= Math.min(c.ronde + 1, total); k++) if (r.rondes[k - 1].etat !== 'jouee') aLire.push(`ronde:${ref}:${k}`);
+      e.file.splice(1, 0, ...aLire);
+    }
+  } else if (type === 'ronde') {
+    const r = e.res[ref];
+    rondeClub(r, +n, parseRonde(await lireFFE(pRonde(ref, n))), membres(r), Date.now());
+  } else throw new Error('tâche inconnue ' + item);
 }
 
 // Date et heure à Paris (le suivi du soir suit l'heure légale)
@@ -294,43 +361,19 @@ export async function suivre(env, maintenant = Date.now()) {
   const soir = p.heure >= 20 && p.heure < 22;
   if (!e || (soir && e.jour !== p.jour)) {
     const file = (await env.CACHE.get('club')) == null ? ['club:1', 'suivi'] : ['suivi'];
-    e = { debut: maintenant, jour: e || soir ? p.jour : '', file, joueurs: [], res: {}, rondes: {}, faits: 0, echecs: {} };
+    e = { debut: maintenant, jour: e || soir ? p.jour : '', file, res: {}, rondes: {}, faits: 0, echecs: {} };
   }
   if (!e.file.length) return { reste: 0, faits: e.faits, actif: false };
-  const membres = (r) => new Set([...e.joueurs, ...(r?.noms ?? [])]);
   for (let i = 0; i < PAR_PASSAGE && e.file.length; i++) {
     const item = e.file[0];
-    const [type, arg, n] = item.split(':');
+    const [type, arg] = item.split(':');
     try {
       if (type === 'club') {
         await pageClub(env, cfg, e, +arg); // pas encore de liste du club (premier déploiement)
       } else if (type === 'suivi') {
-        e.joueurs = (await env.CACHE.get('club', 'json')) ?? [];
         const cal = await env.CACHE.get('calendrier', 'json');
         for (const t of cal?.tournois ?? []) if (enCours(t, p.jour)) { e.file.push('cl:' + t.ref); e.rondes[t.ref] = +(t.fiche?.rondes ?? 0); }
-      } else if (type === 'cl') {
-        const c = parseClassement(await lireFFE(pResultats(arg, 'Cl')));
-        const avant = await env.CACHE.get('r:' + arg, 'json');
-        if (!c) { e.res[arg] = { t: Date.now(), absent: true }; }
-        else {
-          const total = Math.max(e.rondes[arg] || 0, c.ronde + 1, avant?.rondes?.length ?? 0);
-          const r = {
-            t: Date.now(), clLu: Date.now(), total, ...classementClub(c, membres(), cfg.clubNom),
-            rondes: Array.from({ length: total }, (_, k) => avant?.rondes?.[k] ?? { n: k + 1, etat: 'avenir', parties: [] }),
-          };
-          e.res[arg] = r;
-          // Rondes à relire : jusqu'à celle qui suit la dernière jouée, sauf celles déjà terminées.
-          // Classement publié sans joueur du club : rien à suivre (sauf avant la 1re ronde, où il est encore vide).
-          if (r.noms.length || !c.ronde) {
-            const aLire = [];
-            for (let k = 1; k <= Math.min(c.ronde + 1, total); k++) if (r.rondes[k - 1].etat !== 'jouee') aLire.push(`ronde:${arg}:${k}`);
-            e.file.splice(1, 0, ...aLire);
-          }
-        }
-      } else if (type === 'ronde') {
-        const r = e.res[arg];
-        rondeClub(r, +n, parseRonde(await lireFFE(pRonde(arg, n))), membres(r), Date.now());
-      }
+      } else await itemResultats(env, cfg, e, item);
       e.file.shift();
       e.faits++;
     } catch (err) {
@@ -403,13 +446,19 @@ async function publier(env, cfg, maintenant = Date.now()) {
   const auj = paris(maintenant).jour;
   const refs = new Set(l.value.map((t) => t.ref));
   const ancien = (await env.CACHE.get('calendrier', 'json'))?.tournois ?? [];
-  const restes = ancien.filter((t) => !refs.has(t.ref) && enCours(t, auj)).map(({ ref, ville, dep, nom, debut }) => ({ ref, ville, dep, nom, debut }));
+  const base = ({ ref, ville, dep, nom, debut }) => ({ ref, ville, dep, nom, debut });
+  const restes = ancien.filter((t) => !refs.has(t.ref) && enCours(t, auj)).map(base);
+  // Tournois hors ligues retenus par le cycle de nuit : affichés seulement en cours et avec des joueurs du club
+  const vus = new Set([...refs, ...restes.map((t) => t.ref)]);
+  const hors = (cfg.horsLigues ? (await env.CACHE.get('hors', 'json')) ?? [] : []).filter((t) => !vus.has(t.ref)).map(base);
   const tournois = [];
-  for (const t of [...restes, ...l.value]) {
+  for (const t of [...restes, ...hors, ...l.value]) {
     const fiche = await env.CACHE.get('f:' + t.ref, 'json');
-    const x = { ...t, ligue: cfg.ligueDe[t.dep] ?? '', ...(fiche ? { fiche } : {}) };
+    const dansLigues = !!cfg.ligueDe[t.dep];
+    const x = { ...t, ligue: cfg.ligueDe[t.dep] ?? LIGUE_DEP[t.dep] ?? '', ...(dansLigues ? {} : { hors: true }), ...(fiche ? { fiche } : {}) };
     const r = enCours(x, auj) ? await env.CACHE.get('r:' + t.ref, 'json') : null;
     if (r) x.resultats = r;
+    if (!dansLigues && !avecClub(r)) continue;
     tournois.push(x);
   }
   tournois.sort((a, b) => a.debut.localeCompare(b.debut));

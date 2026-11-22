@@ -151,7 +151,7 @@ function ligne(t, auj) {
   const fin = f?.fin && f.fin !== t.debut ? f.fin : '';
   const n = nbClub(t);
   const resume = cours
-    ? [`${t.ville} (${t.dep})`, r?.ronde ? `ronde ${r.ronde}/${r.total}` : f?.rondes && `${f.rondes} rondes`, n && `${n} joueur${n > 1 ? 's' : ''} ${DE_CLUB}`]
+    ? [`${t.ville} (${t.dep})`, t.hors && 'hors ligues suivies', r?.ronde ? `ronde ${r.ronde}/${r.total}` : f?.rondes && `${f.rondes} rondes`, n && `${n} joueur${n > 1 ? 's' : ''} ${DE_CLUB}`]
     : [`${t.ville} (${t.dep})`, f?.rondes && `${f.rondes} rondes`, f?.cadence && cadence(f.cadence)];
   const fini = t.termine || auj > (f?.fin || t.debut);
   const badge = cours ? ` <span class="badge${fini ? ' fini' : ''}">${fini ? 'terminé' : 'en cours'}</span>` : '';

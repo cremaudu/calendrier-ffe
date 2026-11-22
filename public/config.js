@@ -11,6 +11,9 @@ window.CONFIG = {
   // Les joueurs sont repérés par leur nom (liste du club) ou par la colonne club du classement (qui doit contenir clubNom).
   club: 1918,
   clubNom: 'Domloup',
+  // Tournois des autres ligues : repérés chaque nuit quand ils commencent, et affichés (« En cours », puis « Terminés »)
+  // s'ils comptent des joueurs du club. false = seulement les ligues ci-dessus.
+  horsLigues: true,
   // Début de saison (MM-JJ) : la section « Terminés » (tournois du club de la saison) repart alors à zéro
   debutSaison: '09-01',
   // Image du dossier public/ affichée devant le titre ('' pour ne pas en afficher)
