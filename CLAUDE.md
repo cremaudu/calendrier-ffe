@@ -38,6 +38,7 @@ Projet séparé de [pv-ffe](https://github.com/cremaudu/pv-ffe) (feuilles de mat
 - Cron toutes les 5 min (`wrangler.jsonc`), mais `recharger()` ne lance qu'un cycle par nuit (00h00-01h55 UTC), plus un tout premier dès le déploiement (pas d'état `cron:etat`). Hors cycle, un passage se limite à une lecture KV, sans écriture (quota gratuit : 1000 écritures par jour).
 - Un cycle : pages de la liste, puis fiches nouvelles ou de plus de 7 jours (clés `f:<ref>`, expiration 120 jours), 4 pages par passage. Page en échec : remise en fin de file, 3 essais au plus. Une liste incomplète ne remplace pas la précédente (clé `liste`).
 - Suivi du soir (`suivre()`, état `cron:soir`) : chaque jour à 20h, heure de Paris (fenêtre 20h00-21h55), plus un premier dès le déploiement. Il relit la liste du club (`club`/`clubNom` dans `config.js`, clé KV `club`), puis pour chaque tournoi **en cours** (du premier jour à la fin + 7 jours, règle `enCours` dupliquée dans `app.js`) le classement et les rondes pas encore terminées jusqu'à la suivante de la dernière jouée. Seules les lignes des joueurs du club sont gardées (nom normalisé par `cle()`, ou colonne club du classement contenant `clubNom`), écrites en fin de cycle dans `r:<ref>` (60 jours), puis `publier()`. `passage()` enchaîne nuit puis soir (le soir seulement si la nuit n'a rien fait).
+- Historique : quand `publier()` voit sortir de « En cours » un tournoi du calendrier précédent qui comptait des joueurs du club, il l'ajoute, avec ses derniers résultats, à la clé `historique` (`{ saison, tournois }`), servie dans `calendrier.termines`. Elle repart à zéro au changement de saison (`debutSaison` dans `config.js`, « 09-01 »). Un tournoi sorti avant la mise en place de l'historique n'y est pas.
 - Le KV est provisionné automatiquement (pas d'`id` dans `wrangler.jsonc`) ; un redéploiement réutilise celui du Worker déployé (`calendrier-ffe-cache`).
 
 ## Tournois jeunes
@@ -46,4 +47,7 @@ Environ un tiers des annonces. Repérés côté client par leur nom (`JEUNES` da
 
 ## Affichage
 
-Deux sections : « En cours » (tournois avec des joueurs du club d'abord ; classement et parties de ces joueurs, rondes non commencées grisées) puis « À venir », par mois.
+Trois sections, toujours affichées avec leur compteur (même vides) et accessibles par les ancres de l'en-tête (`#en-cours`, `#a-venir`, `#termines`) :
+- « En cours » : tournois avec des joueurs du club d'abord ; classement et parties de ces joueurs, rondes non commencées grisées, rondes et fiche repliées. Un tournoi dont les résultats publiés ne montrent aucun joueur du club est masqué (`sansClub`) ; avant toute publication, il reste affiché.
+- « À venir », par mois.
+- « Terminés » : historique de la saison, plus récents d'abord, même affichage que « En cours ».

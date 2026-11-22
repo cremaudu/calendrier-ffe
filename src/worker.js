@@ -155,7 +155,7 @@ function config(env) {
     const ligueDe = {};
     for (const c of ligues) for (const d of LIGUES[c][1].split(' ')) ligueDe[d] = c;
     const club = +(js.match(/^\s*club:\s*(\d+)/m)?.[1] ?? 0);
-    return { appli: chaine('appli') ?? 'Calendrier FFE', entete: chaine('entete') ?? '#161616', ligues, ligueDe, club, clubNom: chaine('clubNom') ?? '' };
+    return { appli: chaine('appli') ?? 'Calendrier FFE', entete: chaine('entete') ?? '#161616', ligues, ligueDe, club, clubNom: chaine('clubNom') ?? '', debutSaison: chaine('debutSaison') ?? '09-01' };
   })());
 }
 
@@ -248,8 +248,10 @@ export async function suivre(env, maintenant = Date.now()) {
   let e = await env.CACHE.get('cron:soir', 'json');
   const p = paris(maintenant);
   // Tout premier cycle dès le déploiement : jour laissé vide pour que celui de 20h ait lieu quand même
-  if (!e || (p.heure >= 20 && p.heure < 22 && e.jour !== p.jour)) {
-    e = { debut: maintenant, jour: e ? p.jour : '', file: ['club:1', 'suivi'], joueurs: [], res: {}, rondes: {}, faits: 0, echecs: {} };
+  // (sauf s'il tombe déjà dans la fenêtre du soir)
+  const soir = p.heure >= 20 && p.heure < 22;
+  if (!e || (soir && e.jour !== p.jour)) {
+    e = { debut: maintenant, jour: e || soir ? p.jour : '', file: ['club:1', 'suivi'], joueurs: [], res: {}, rondes: {}, faits: 0, echecs: {} };
   }
   if (!e.file.length) return { reste: 0, faits: e.faits, actif: false };
   const membres = (r) => new Set([...e.joueurs, ...(r?.noms ?? [])]);
@@ -328,8 +330,14 @@ export async function suivre(env, maintenant = Date.now()) {
   return { reste: e.file.length, faits: e.faits, actif: true };
 }
 
+// Saison d'une date ISO (« 2026-2027 »), qui commence le jour debutSaison (« MM-JJ ») de config.js
+const saisonDe = (iso, debut) => { const a = +iso.slice(0, 4) - (iso.slice(5) < debut ? 1 : 0); return `${a}-${a + 1}`; };
+const avecClub = (r) => !!r && !r.absent && !!(r.classement?.lignes?.length || r.noms?.length);
+
 // Assemble liste, fiches et résultats en une seule réponse, servie telle quelle par /api/tournois.
 // Un tournoi commencé peut quitter la liste FFE des annonces : il reste affiché tant qu'il est en cours.
+// Quand il sort de « En cours » (fin + 7 jours), il passe dans l'historique de la saison (clé historique)
+// avec ses derniers résultats, s'il a compté des joueurs du club. L'historique repart à zéro à chaque saison.
 async function publier(env, cfg, maintenant = Date.now()) {
   const l = await env.CACHE.getWithMetadata('liste', 'json');
   if (!l.value) return;
@@ -346,8 +354,22 @@ async function publier(env, cfg, maintenant = Date.now()) {
     tournois.push(x);
   }
   tournois.sort((a, b) => a.debut.localeCompare(b.debut));
+
+  const saison = saisonDe(auj, cfg.debutSaison);
+  const lu = await env.CACHE.get('historique', 'json');
+  const hist = lu?.saison === saison ? lu : { saison, tournois: [] };
+  const archives = new Set(hist.tournois.map((x) => x.ref));
+  let ajout = hist !== lu; // nouvelle saison : l'historique vidé est écrit une fois
+  for (const x of ancien) {
+    if (archives.has(x.ref) || !x.debut || x.debut > auj || enCours(x, auj) || saisonDe(x.debut, cfg.debutSaison) !== saison) continue;
+    if (!avecClub(x.resultats)) continue;
+    hist.tournois.push(x);
+    ajout = true;
+  }
+  if (ajout) await env.CACHE.put('historique', JSON.stringify(hist));
+
   const t = l.metadata?.t ?? Date.now();
-  await env.CACHE.put('calendrier', JSON.stringify({ t, ligues: liguesDe(cfg), tournois }), { metadata: { t } });
+  await env.CACHE.put('calendrier', JSON.stringify({ t, ligues: liguesDe(cfg), tournois, saison, termines: hist.tournois }), { metadata: { t } });
 }
 
 // Un passage de la tâche planifiée : le cycle de nuit d'abord, le suivi du soir s'il n'a rien fait

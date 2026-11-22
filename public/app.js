@@ -70,6 +70,8 @@ const plus7 = (d) => iso(new Date(new Date(d + 'T12:00:00').getTime() + 7 * 8640
 const enCours = (t, auj) => t.debut <= auj && auj <= plus7(t.fiche?.fin || t.debut);
 const CLUB = CFG.clubNom || 'du club';
 const DE_CLUB = /^[aeiouyh]/i.test(CLUB) ? "d'" + CLUB : 'de ' + CLUB;
+// Résultats publiés (classement ou appariements) sans aucun joueur du club
+const sansClub = (t) => { const r = t.resultats; return !!r && !r.absent && !nbClub(t) && (r.ronde > 0 || !!r.rondes?.some((ro) => ro.etat !== 'avenir')); };
 const nbClub = (t) => t.resultats?.classement?.lignes?.length || t.resultats?.noms?.length || 0;
 const ETATS = { jouee: 'terminée', encours: 'en cours', appariee: 'appariée, pas commencée', avenir: 'pas encore appariée' };
 const ffe = (t, a) => `https://www.echecs.asso.fr/Resultats.aspx?URL=Tournois/Id/${t.ref}/${t.ref}&Action=${a}`;
@@ -104,13 +106,15 @@ function suivi(t) {
 const plie = (cle, titre, contenu) => `<details class="pli" data-pli="${cle}" ${plisOuverts.has(cle) ? 'open' : ''}><summary>${titre}</summary>${contenu}</details>`;
 
 function ligne(t, auj) {
-  const f = t.fiche, r = t.resultats, cours = enCours(t, auj);
+  // Tournoi en cours ou terminé (historique de la saison) : résultats du club, fiche repliée
+  const f = t.fiche, r = t.resultats, cours = enCours(t, auj) || t.termine;
   const fin = f?.fin && f.fin !== t.debut ? f.fin : '';
   const n = nbClub(t);
   const resume = cours
     ? [`${t.ville} (${t.dep})`, r?.ronde ? `ronde ${r.ronde}/${r.total}` : f?.rondes && `${f.rondes} rondes`, n && `${n} joueur${n > 1 ? 's' : ''} ${DE_CLUB}`]
     : [`${t.ville} (${t.dep})`, f?.rondes && `${f.rondes} rondes`, f?.cadence && cadence(f.cadence)];
-  const badge = cours ? ` <span class="badge${auj > (f?.fin || t.debut) ? ' fini' : ''}">${auj > (f?.fin || t.debut) ? 'terminé' : 'en cours'}</span>` : '';
+  const fini = t.termine || auj > (f?.fin || t.debut);
+  const badge = cours ? ` <span class="badge${fini ? ' fini' : ''}">${fini ? 'terminé' : 'en cours'}</span>` : '';
   return `<details class="tournoi" data-ref="${t.ref}" ${ouverts.has(t.ref) ? 'open' : ''}>
     <summary><span class="date">${esc(jour(t.debut))}${fin ? `<small>au ${esc(jour(fin))}</small>` : ''}</span>
       <span class="titre"><b>${esc(t.nom)}</b>${badge}<small>${esc(resume.filter(Boolean).join(' · '))}</small></span></summary>
@@ -122,12 +126,16 @@ function rendre() {
   $('sous-titre').textContent = 'Cadence lente · ' + ligues.map((l) => l.nom).join(', ');
   const auj = iso(new Date());
   // Tournois en cours (jusqu'à 7 jours après la fin) ou à venir (la liste FFE n'est relue qu'une fois par nuit).
-  // Un tournoi jeunes en cours reste affiché s'il compte des joueurs du club.
-  const actifs = (cal?.tournois ?? []).filter((t) => t.debut && (t.debut > auj || enCours(t, auj)));
+  // Un tournoi en cours dont les résultats montrent qu'aucun joueur du club n'y joue est masqué ; tant que rien n'est
+  // publié (avant la 1re ronde), il reste affiché. Un tournoi jeunes en cours reste affiché s'il compte des joueurs du club.
+  const actifs = (cal?.tournois ?? []).filter((t) => t.debut && (t.debut > auj || (enCours(t, auj) && !sansClub(t))));
   const tous = actifs.filter((t) => jeunes || !JEUNES.test(t.nom) || (enCours(t, auj) && nbClub(t)));
+  // Terminés : historique de la saison, tournois où des joueurs du club ont joué (déjà filtrés par le relais)
+  const refs = new Set(actifs.map((t) => t.ref));
+  const archives = (cal?.termines ?? []).filter((t) => !refs.has(t.ref)).map((t) => ({ ...t, termine: true }));
   if (ligue && !ligues.some((l) => l.code === ligue)) ligue = '';
-  const compte = (code) => tous.filter((t) => t.ligue === code).length;
-  $('ligues').innerHTML = (ligues.length > 1 ? [{ code: '', nom: 'Toutes', n: tous.length }, ...ligues] : ligues)
+  const compte = (code) => [...tous, ...archives].filter((t) => t.ligue === code).length;
+  $('ligues').innerHTML = (ligues.length > 1 ? [{ code: '', nom: 'Toutes', n: tous.length + archives.length }, ...ligues] : ligues)
     .map((l) => `<button data-l="${l.code}" class="${l.code === ligue ? 'actif' : ''}">${esc(l.nom)} <small>${l.n ?? compte(l.code)}</small></button>`).join('');
   $('ligues').querySelectorAll('button').forEach((b) => (b.onclick = () => { ligue = b.dataset.l; ecrire('ligue', ligue); rendre(); }));
 
@@ -140,20 +148,29 @@ function rendre() {
   $('jeunes-option').hidden = !actifs.some((t) => JEUNES.test(t.nom));
   $('jeunes').checked = jeunes;
   $('jeunes-txt').textContent = 'Afficher les tournois jeunes' +(masques ? ` (${masques})` : '');
-  // Deux sections : en cours (ceux qui comptent des joueurs du club d'abord), puis à venir par mois
+  // Trois sections : en cours (ceux qui comptent des joueurs du club d'abord), à venir par mois, terminés (plus récents d'abord)
   const cours = visibles.filter((t) => enCours(t, auj)).sort((a, b) => (nbClub(b) > 0) - (nbClub(a) > 0) || a.debut.localeCompare(b.debut));
   const avenir = visibles.filter((t) => !enCours(t, auj));
+  const finDe = (t) => t.fiche?.fin || t.debut;
+  const termines = archives.filter(retenu).sort((a, b) => finDe(b).localeCompare(finDe(a)));
   let h = '', mois = '';
-  if (cours.length) h += `<h2 class="section">En cours <small>${cours.length}</small></h2>` + cours.map((t) => ligne(t, auj)).join('');
-  if (avenir.length) h += `<h2 class="section">À venir <small>${avenir.length}</small></h2>`;
+  // Les trois sections sont toujours là, avec leur compteur, et accessibles par les ancres de l'en-tête
+  const section = (id, nom, n, plus = '') => `<h2 class="section" id="${id}">${nom} <small>${n}${plus}</small></h2>`
+    + (n ? '' : `<p class="note vide">Aucun tournoi ${{ 'en-cours': 'en cours', 'a-venir': 'à venir', termines: 'terminé' }[id]}${ligue || q ? ' pour ces critères' : ''}.</p>`);
+  $('sections').innerHTML = [['en-cours', 'En cours', cours.length], ['a-venir', 'À venir', avenir.length], ['termines', 'Terminés', termines.length]]
+    .map(([id, nom, n]) => `<a href="#${id}">${nom} <small>${n}</small></a>`).join('');
+  h += section('en-cours', 'En cours', cours.length) + cours.map((t) => ligne(t, auj)).join('');
+  h += section('a-venir', 'À venir', avenir.length);
   for (const t of avenir) {
     const m = t.debut.slice(0, 7);
     if (m !== mois) { mois = m; h += `<h2 class="mois">${esc(jour(m + '-01', { month: 'long', year: 'numeric' }))}</h2>`; }
     h += ligne(t, auj);
   }
+  // Dernière section : assez haute pour que son ancre l'amène en haut de l'écran
+  h += `<section class="derniere">${section('termines', 'Terminés', termines.length, cal?.saison ? ' · saison ' + esc(cal.saison) : '') + termines.map((t) => ligne(t, auj)).join('')}</section>`;
   $('liste').innerHTML = h;
 
-  const n = visibles.length;
+  const n = visibles.length + termines.length;
   $('etat').className = 'note' + (etat.startsWith('Erreur') ? ' err' : '');
   $('etat').textContent = !cal ? etat || 'Chargement…'
     : !cal.t ? "Calendrier en préparation : le relais lit le site FFE (environ 30 s par page). Revenez dans un quart d'heure."
@@ -180,6 +197,8 @@ $('liste').addEventListener('toggle', (e) => {
   const pli = e.target.dataset?.pli;
   if (pli) e.target.open ? plisOuverts.add(pli) : plisOuverts.delete(pli);
 }, true);
+// Hauteur de l'en-tête collant (variable selon la largeur) : les ancres de section s'arrêtent juste dessous
+new ResizeObserver(([e]) => document.documentElement.style.setProperty('--haut', e.target.offsetHeight + 'px')).observe(document.querySelector('header'));
 rendre();
 charger();
 if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js');

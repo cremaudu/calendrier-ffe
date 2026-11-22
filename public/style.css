@@ -2,7 +2,12 @@
 @media (prefers-color-scheme: dark) { :root { --fond:#12151b; --carte:#1c212b; --txt:#e8eaf0; --gris:#9aa3b2; --trait:#2e3542; --bleu:#5aa9e6; } }
 * { box-sizing: border-box; }
 body { margin:0; font:16px/1.4 system-ui,sans-serif; background:var(--fond); color:var(--txt); }
-header { position:sticky; top:0; z-index:5; background:var(--noir); color:#fff; padding:6px 16px; display:flex; align-items:center; gap:10px; border-bottom:3px solid var(--jaune); }
+html { scroll-behavior:smooth; }
+header { position:sticky; top:0; z-index:5; background:var(--noir); color:#fff; padding:6px 16px; display:flex; flex-wrap:wrap; align-items:center; gap:6px 10px; border-bottom:3px solid var(--jaune); }
+#sections { margin-left:auto; display:flex; gap:6px; flex-wrap:wrap; }
+#sections a { color:#fff; text-decoration:none; font-size:13px; padding:4px 9px; border:1px solid #ffffff40; border-radius:7px; white-space:nowrap; }
+#sections a:hover { border-color:var(--jaune); }
+#sections small { color:var(--jaune); font-weight:600; margin-left:2px; }
 header img { height:36px; background:#fff; border-radius:6px; padding:2px; }
 header img[hidden] { display:none; }
 h1 { font-size:18px; margin:0; }
@@ -36,7 +41,9 @@ details.tournoi[open] > summary { border-bottom:1px solid var(--trait); }
 .fiche tr + tr > * { border-top:1px solid var(--trait); }
 .fiche h3 { font-size:14px; margin:14px 0 4px; }
 .annonce { white-space:pre-line; font-size:14px; margin:0; overflow-wrap:anywhere; }
-h2.section { font-size:17px; margin:22px 0 8px; padding-bottom:4px; border-bottom:2px solid var(--jaune); }
+h2.section { font-size:17px; margin:22px 0 8px; padding-bottom:4px; border-bottom:2px solid var(--jaune); scroll-margin-top:calc(var(--haut, 60px) + 8px); }
+.note.vide { margin:4px 0 0; }
+section.derniere { min-height:calc(100vh - var(--haut, 60px) - 16px); }
 h2.section small { font-size:13px; font-weight:400; color:var(--gris); margin-left:4px; }
 h2.section + h2.mois { margin-top:10px; }
 .badge.fini { background:var(--trait); color:var(--txt); }
