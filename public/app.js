@@ -9,6 +9,7 @@ const $ = (id) => document.getElementById(id);
   if (c.accent) r.setProperty('--jaune', c.accent);
   if (c.bouton) r.setProperty('--bleu', c.bouton);
   document.title = $('titre').textContent = CFG.appli ?? 'Calendrier FFE';
+  if (CFG.logo) { $('logo').src = CFG.logo; $('logo').alt = CFG.clubNom ?? ''; $('logo').hidden = false; }
 }
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const lire = (k, d = null) => { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch { return d; } };
@@ -63,23 +64,62 @@ function fiche(t) {
   return h + `<p><a href="https://www.echecs.asso.fr/FicheTournoi.aspx?Ref=${t.ref}" target="_blank" rel="noopener">Fiche sur le site FFE ›</a></p>`;
 }
 
+// En cours : du premier jour du tournoi au dernier + 7 jours (même règle que src/worker.js)
+const plus7 = (d) => iso(new Date(new Date(d + 'T12:00:00').getTime() + 7 * 86400000));
+const enCours = (t, auj) => t.debut <= auj && auj <= plus7(t.fiche?.fin || t.debut);
+const CLUB = CFG.clubNom || 'du club';
+const DE_CLUB = /^[aeiouyh]/i.test(CLUB) ? "d'" + CLUB : 'de ' + CLUB;
+const nbClub = (t) => t.resultats?.classement?.lignes?.length || t.resultats?.noms?.length || 0;
+const ETATS = { jouee: 'terminée', encours: 'en cours', appariee: 'appariée, pas commencée', avenir: 'pas encore appariée' };
+const ffe = (t, a) => `https://www.echecs.asso.fr/Resultats.aspx?URL=Tournois/Id/${t.ref}/${t.ref}&Action=${a}`;
+
+// Tournoi en cours : classement et parties des joueurs du club (relus chaque soir à 20h)
+function suivi(t) {
+  const r = t.resultats;
+  let h = `<h3>Joueurs ${esc(DE_CLUB)}</h3>`;
+  if (!r) return h + '<p class="note">Résultats pas encore relus (chaque soir vers 20h).</p>';
+  if (r.absent) return h + `<p class="note">Pas de résultats publiés sur le site FFE · relu ${esc(quand(r.t))}.</p>`;
+  if (!nbClub(t)) return h + `<p class="note">Aucun joueur ${esc(DE_CLUB)} dans ce tournoi · relu ${esc(quand(r.t))}.</p>`;
+  const c = r.classement;
+  if (c?.lignes?.length && r.ronde) {
+    h += `<h4>Classement après la ronde ${r.ronde}<small>${r.participants} joueurs · <a href="${esc(ffe(t, 'Cl'))}" target="_blank" rel="noopener">complet ›</a></small></h4>
+      <table class="papi"><tr>${c.entetes.map((e) => `<th>${esc(e)}</th>`).join('')}</tr>
+      ${c.lignes.map((l) => `<tr>${l.map((v) => `<td>${esc(v)}</td>`).join('')}</tr>`).join('')}</table>`;
+  }
+  for (const ro of r.rondes ?? []) {
+    const grise = ro.etat === 'avenir' || ro.etat === 'appariee';
+    h += `<div class="ronde${grise ? ' grise' : ''}"><h4>Ronde ${ro.n}<small>${ETATS[ro.etat] ?? ''}${ro.etat !== 'avenir' ? ` · <a href="${esc(ffe(t, String(ro.n).padStart(2, '0')))}" target="_blank" rel="noopener">toutes les parties ›</a>` : ''}</small></h4>`;
+    if (ro.parties.length) {
+      const j = (nom, elo, d) => `<td class="${d ? 'club' : ''}">${esc(nom)}${elo ? ` <small>${esc(elo)}</small>` : ''}</td>`;
+      h += `<table class="papi parties">${ro.parties.map((p) => `<tr><td class="ech">${esc(p.e)}</td>${j(p.b, p.eb, p.db)}<td class="res">${esc(p.r)}</td>${j(p.n, p.en, p.dn)}</tr>`).join('')}</table>`;
+    }
+    h += '</div>';
+  }
+  return h + `<p class="note">Résultats relus ${esc(quand(r.t))}.</p>`;
+}
+
 function ligne(t, auj) {
-  const f = t.fiche;
+  const f = t.fiche, r = t.resultats, cours = enCours(t, auj);
   const fin = f?.fin && f.fin !== t.debut ? f.fin : '';
-  const resume = [`${t.ville} (${t.dep})`, f?.rondes && `${f.rondes} rondes`, f?.cadence && cadence(f.cadence)].filter(Boolean).join(' · ');
+  const n = nbClub(t);
+  const resume = cours
+    ? [`${t.ville} (${t.dep})`, r?.ronde ? `ronde ${r.ronde}/${r.total}` : f?.rondes && `${f.rondes} rondes`, n && `${n} joueur${n > 1 ? 's' : ''} ${DE_CLUB}`]
+    : [`${t.ville} (${t.dep})`, f?.rondes && `${f.rondes} rondes`, f?.cadence && cadence(f.cadence)];
+  const badge = cours ? ` <span class="badge${auj > (f?.fin || t.debut) ? ' fini' : ''}">${auj > (f?.fin || t.debut) ? 'terminé' : 'en cours'}</span>` : '';
   return `<details class="tournoi" data-ref="${t.ref}" ${ouverts.has(t.ref) ? 'open' : ''}>
     <summary><span class="date">${esc(jour(t.debut))}${fin ? `<small>au ${esc(jour(fin))}</small>` : ''}</span>
-      <span class="titre"><b>${esc(t.nom)}</b>${t.debut < auj ? ' <span class="badge">en cours</span>' : ''}<small>${esc(resume)}</small></span></summary>
-    <div class="fiche">${fiche(t)}</div></details>`;
+      <span class="titre"><b>${esc(t.nom)}</b>${badge}<small>${esc(resume.filter(Boolean).join(' · '))}</small></span></summary>
+    <div class="fiche">${cours ? suivi(t) + '<h3>Fiche du tournoi</h3>' : ''}${fiche(t)}</div></details>`;
 }
 
 function rendre() {
   const ligues = cal?.ligues?.length ? cal.ligues : CFG.ligues.map((code) => ({ code, nom: code }));
   $('sous-titre').textContent = 'Cadence lente · ' + ligues.map((l) => l.nom).join(', ');
   const auj = iso(new Date());
-  // Tournois pas encore terminés (la liste FFE n'est relue qu'une fois par nuit)
-  const futurs = (cal?.tournois ?? []).filter((t) => t.debut && (t.fiche?.fin || t.debut) >= auj);
-  const tous = jeunes ? futurs : futurs.filter((t) => !JEUNES.test(t.nom));
+  // Tournois en cours (jusqu'à 7 jours après la fin) ou à venir (la liste FFE n'est relue qu'une fois par nuit).
+  // Un tournoi jeunes en cours reste affiché s'il compte des joueurs du club.
+  const actifs = (cal?.tournois ?? []).filter((t) => t.debut && (t.debut > auj || enCours(t, auj)));
+  const tous = actifs.filter((t) => jeunes || !JEUNES.test(t.nom) || (enCours(t, auj) && nbClub(t)));
   if (ligue && !ligues.some((l) => l.code === ligue)) ligue = '';
   const compte = (code) => tous.filter((t) => t.ligue === code).length;
   $('ligues').innerHTML = (ligues.length > 1 ? [{ code: '', nom: 'Toutes', n: tous.length }, ...ligues] : ligues)
@@ -91,12 +131,17 @@ function rendre() {
     && (!q || norm([t.nom, t.ville, t.dep, t.fiche?.cadence, ...(t.fiche?.infos ?? []).map((x) => x[1])].join(' ')).includes(q));
   const visibles = tous.filter(retenu);
   // Case « tournois jeunes », avec le nombre de ceux masqués pour la ligue et la recherche en cours
-  const masques = jeunes ? 0 : futurs.filter((t) => JEUNES.test(t.nom) && retenu(t)).length;
-  $('jeunes-option').hidden = !futurs.some((t) => JEUNES.test(t.nom));
+  const masques = actifs.filter(retenu).length - visibles.length;
+  $('jeunes-option').hidden = !actifs.some((t) => JEUNES.test(t.nom));
   $('jeunes').checked = jeunes;
   $('jeunes-txt').textContent = 'Afficher les tournois jeunes' +(masques ? ` (${masques})` : '');
+  // Deux sections : en cours (ceux qui comptent des joueurs du club d'abord), puis à venir par mois
+  const cours = visibles.filter((t) => enCours(t, auj)).sort((a, b) => (nbClub(b) > 0) - (nbClub(a) > 0) || a.debut.localeCompare(b.debut));
+  const avenir = visibles.filter((t) => !enCours(t, auj));
   let h = '', mois = '';
-  for (const t of visibles) {
+  if (cours.length) h += `<h2 class="section">En cours <small>${cours.length}</small></h2>` + cours.map((t) => ligne(t, auj)).join('');
+  if (avenir.length) h += `<h2 class="section">À venir <small>${avenir.length}</small></h2>`;
+  for (const t of avenir) {
     const m = t.debut.slice(0, 7);
     if (m !== mois) { mois = m; h += `<h2 class="mois">${esc(jour(m + '-01', { month: 'long', year: 'numeric' }))}</h2>`; }
     h += ligne(t, auj);

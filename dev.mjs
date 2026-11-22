@@ -1,9 +1,9 @@
 // Serveur local (sans wrangler) : sert public/ et fait tourner le worker dans Node, avec un faux KV en mémoire.
-// Usage : node dev.mjs [port]   (8788 par défaut). GET /api/dev-cron exécute un passage de la tâche planifiée.
+// Usage : node dev.mjs [port]   (8788 par défaut). GET /api/dev-cron exécute un passage de la tâche planifiée (cycle de nuit, puis suivi du soir).
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { extname, join, normalize } from 'node:path';
-import worker, { recharger } from './src/worker.js';
+import worker, { passage } from './src/worker.js';
 
 const kv = new Map();
 const env = {
@@ -20,7 +20,7 @@ const port = +process.argv[2] || 8788;
 createServer(async (req, res) => {
   const url = new URL(req.url, 'http://localhost');
   if (url.pathname.startsWith('/api/') || url.pathname === '/manifest.webmanifest') {
-    const r = url.pathname === '/api/dev-cron' ? Response.json(await recharger(env)) : await worker.fetch(new Request(url), env, { waitUntil() {} });
+    const r = url.pathname === '/api/dev-cron' ? Response.json(await passage(env)) : await worker.fetch(new Request(url), env, { waitUntil() {} });
     res.writeHead(r.status, Object.fromEntries(r.headers));
     return res.end(await r.text());
   }

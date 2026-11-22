@@ -4,7 +4,7 @@
 const ENT = {
   nbsp: ' ', amp: '&', lt: '<', gt: '>', quot: '"', eacute: 'é', egrave: 'è', ecirc: 'ê', agrave: 'à', acirc: 'â', ccedil: 'ç', ocirc: 'ô', icirc: 'î', iuml: 'ï',
   ucirc: 'û', ugrave: 'ù', euml: 'ë', oelig: 'œ', Eacute: 'É', Egrave: 'È', Ecirc: 'Ê', Agrave: 'À', Ccedil: 'Ç',
-  euro: '€', rsquo: '’', lsquo: '‘', ldquo: '“', rdquo: '”', laquo: '«', raquo: '»', deg: '°', hellip: '…', ndash: '–', mdash: '—', bull: '•',
+  frac12: '½', euro: '€', rsquo: '’', lsquo: '‘', ldquo: '“', rdquo: '”', laquo: '«', raquo: '»', deg: '°', hellip: '…', ndash: '–', mdash: '—', bull: '•',
 };
 const car = (n) => { try { return String.fromCodePoint(n); } catch { return ''; } }; // emojis compris (&#x1F3C6;)
 

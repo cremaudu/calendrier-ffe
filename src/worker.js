@@ -88,6 +88,51 @@ export function parseFiche(html) {
   };
 }
 
+/* ---------- Résultats (tournois en cours) ----------
+   Pages Papi du site FFE : Resultats.aspx?URL=Tournois/Id/<ref>/<ref>&Action=Cl (classement), 01, 02… (rondes).
+   Sans résultats publiés : « Désolé, le fichier n'existe pas... » (pas de ligne papi_titre). */
+const pResultats = (ref, action) => `Resultats.aspx?URL=Tournois/Id/${ref}/${ref}&Action=${action}`;
+const pClub = (ref) => 'ListeJoueurs.aspx?Action=JOUEURCLUBREF&ClubRef=' + ref;
+// Nom de joueur comparable entre pages (« BURESI-LANG Andréa » = « BURESI LANG Andrea »)
+export const cle = (s) => sansAccent(String(s ?? '')).replace(/[^a-z]/g, '');
+
+function papi(html) {
+  const titre = html.match(/<tr class=papi_titre>([\s\S]*?)<\/tr>/)?.[1];
+  if (titre == null) return null;
+  return {
+    ronde: +(decode(titre).match(/ronde (\d+)/i)?.[1] ?? 0),
+    entetes: cells(html.match(/<tr class=papi_liste_t>([\s\S]*?)<\/tr>/)?.[1] ?? '').map(decode),
+    lignes: [...html.matchAll(/<tr class=papi_liste_[fc]>([\s\S]*?)<\/tr>/g)].map((m) => cells(m[1]).map(decode)),
+  };
+}
+
+// Classement : ronde jouée (« Classement après la ronde 2 »), colonnes utiles (sans drapeau, ligue ni club), toutes les lignes
+export function parseClassement(html) {
+  const p = papi(html);
+  if (!p) return null;
+  const garde = p.entetes.map((e, i) => (['', 'Fede', 'Ligue', 'Club'].includes(e) ? -1 : i)).filter((i) => i >= 0);
+  const iNom = p.entetes.indexOf('Nom'), iClub = p.entetes.indexOf('Club');
+  return {
+    ronde: p.ronde, entetes: garde.map((i) => p.entetes[i]),
+    lignes: p.lignes.map((c) => ({ nom: c[iNom] ?? '', club: c[iClub] ?? '', cols: garde.map((i) => c[i] ?? '') })),
+  };
+}
+
+// Ronde : échiquier, blancs, Elo, résultat, noirs, Elo. Tableau vide : ronde pas encore appariée.
+const joue = (r) => /[\d½F]/.test(r);
+export function parseRonde(html) {
+  const parties = (papi(html)?.lignes ?? []).filter((c) => c.length >= 7)
+    .map((c) => ({ e: c[0], b: c[2], eb: c[3], r: c[4], n: c[5], en: c[6] }));
+  const n = parties.filter((p) => joue(p.r)).length;
+  return { etat: !parties.length ? 'avenir' : n === parties.length ? 'jouee' : n ? 'encours' : 'appariee', parties };
+}
+
+// Liste des joueurs d'un club (40 par page ; la flèche « page suivante » manque sur la dernière)
+export function parseClub(html) {
+  const noms = [...html.matchAll(/<tr class=liste_(?:clair|fonce)>([\s\S]*?)<\/tr>/g)].map((m) => decode(cells(m[1])[1] ?? '')).filter(Boolean);
+  return { noms, suite: /PagerHeader','d'/.test(html) };
+}
+
 async function lireFFE(path, body) {
   const r = await fetch(FFE + path, {
     method: body ? 'POST' : 'GET', body, signal: AbortSignal.timeout(90000),
@@ -109,7 +154,8 @@ function config(env) {
     const ligues = (js.match(/^\s*ligues:\s*\[([^\]]*)\]/m)?.[1].match(/[A-Z]{3}/g) ?? []).filter((c) => LIGUES[c]);
     const ligueDe = {};
     for (const c of ligues) for (const d of LIGUES[c][1].split(' ')) ligueDe[d] = c;
-    return { appli: chaine('appli') ?? 'Calendrier FFE', entete: chaine('entete') ?? '#161616', ligues, ligueDe };
+    const club = +(js.match(/^\s*club:\s*(\d+)/m)?.[1] ?? 0);
+    return { appli: chaine('appli') ?? 'Calendrier FFE', entete: chaine('entete') ?? '#161616', ligues, ligueDe, club, clubNom: chaine('clubNom') ?? '' };
   })());
 }
 
@@ -127,7 +173,7 @@ export async function recharger(env, maintenant = Date.now()) {
   const jour = (t) => new Date(t).toISOString().slice(0, 10);
   const nuit = new Date(maintenant).getUTCHours() < 2;
   if (!e || (nuit && jour(e.debut) !== jour(maintenant))) e = { debut: maintenant, file: ['liste:1'], lignes: [], faits: 0, echecs: {} };
-  if (!e.file.length) return { reste: 0, faits: e.faits }; // rien à faire : pas d'écriture KV
+  if (!e.file.length) return { reste: 0, faits: e.faits, actif: false }; // rien à faire : pas d'écriture KV
   let change = false;
   for (let i = 0; i < PAR_PASSAGE && e.file.length; i++) {
     const item = e.file[0];
@@ -174,23 +220,140 @@ export async function recharger(env, maintenant = Date.now()) {
       if (e.echecs[item] < 3) e.file.push(item);
     }
   }
-  if (change) await publier(env, cfg);
+  if (change) await publier(env, cfg, maintenant);
   e.maj = maintenant;
   await env.CACHE.put('cron:etat', JSON.stringify(e));
-  return { reste: e.file.length, faits: e.faits };
+  return { reste: e.file.length, faits: e.faits, actif: true };
 }
 
-// Assemble liste et fiches en une seule réponse, servie telle quelle par /api/tournois
-async function publier(env, cfg) {
+// Date et heure à Paris (le suivi du soir suit l'heure légale)
+function paris(t) {
+  const p = Object.fromEntries(new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Paris', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', hourCycle: 'h23' })
+    .formatToParts(new Date(t)).map((x) => [x.type, x.value]));
+  return { jour: `${p.year}-${p.month}-${p.day}`, heure: +p.hour };
+}
+const plus7 = (iso) => new Date(Date.parse(iso + 'T12:00:00Z') + 7 * 86400000).toISOString().slice(0, 10);
+// En cours : du premier jour du tournoi au dernier + 7 jours (même règle que public/app.js)
+export const enCours = (t, auj) => !!t.debut && t.debut <= auj && auj <= plus7(t.fiche?.fin || t.debut);
+
+/* ---------- Suivi du soir ----------
+   Chaque jour à 20h (Paris), un cycle relit les joueurs du club (config.js : club), puis pour chaque tournoi
+   en cours le classement et les rondes pas encore terminées ; seules les lignes des joueurs du club sont gardées
+   (clé r:<ref>). Même rythme que la nuit : 4 pages par passage, 3 essais par page. */
+const JOURS_RESULTATS = 60;
+
+export async function suivre(env, maintenant = Date.now()) {
+  const cfg = await config(env);
+  if (!cfg.club) return { reste: 0, actif: false };
+  let e = await env.CACHE.get('cron:soir', 'json');
+  const p = paris(maintenant);
+  // Tout premier cycle dès le déploiement : jour laissé vide pour que celui de 20h ait lieu quand même
+  if (!e || (p.heure >= 20 && p.heure < 22 && e.jour !== p.jour)) {
+    e = { debut: maintenant, jour: e ? p.jour : '', file: ['club:1', 'suivi'], joueurs: [], res: {}, rondes: {}, faits: 0, echecs: {} };
+  }
+  if (!e.file.length) return { reste: 0, faits: e.faits, actif: false };
+  const membres = (r) => new Set([...e.joueurs, ...(r?.noms ?? [])]);
+  for (let i = 0; i < PAR_PASSAGE && e.file.length; i++) {
+    const item = e.file[0];
+    const [type, arg, n] = item.split(':');
+    try {
+      if (type === 'club') {
+        // Page 1 en lecture simple, les suivantes par postback sur son formulaire
+        let html;
+        if (+arg === 1) { html = await lireFFE(pClub(cfg.club)); e.form = champsForm(html); e.lus = []; }
+        else {
+          const body = new URLSearchParams(e.form);
+          body.set('__EVENTTARGET', 'ctl00$ContentPlaceHolderMain$PagerHeader');
+          body.set('__EVENTARGUMENT', arg);
+          html = await lireFFE(pClub(cfg.club), body);
+        }
+        const c = parseClub(html);
+        if (!c.noms.length) throw new Error('liste du club vide');
+        e.lus.push(...c.noms.map(cle));
+        if (c.suite && +arg < 20) e.file.splice(1, 0, 'club:' + (+arg + 1));
+        else { e.joueurs = e.lus; e.clubOk = true; delete e.form; delete e.lus; await env.CACHE.put('club', JSON.stringify(e.joueurs)); }
+      } else if (type === 'suivi') {
+        // Liste du club illisible ce soir : celle d'un soir précédent
+        if (!e.clubOk) e.joueurs = (await env.CACHE.get('club', 'json')) ?? [];
+        const cal = await env.CACHE.get('calendrier', 'json');
+        for (const t of cal?.tournois ?? []) if (enCours(t, p.jour)) { e.file.push('cl:' + t.ref); e.rondes[t.ref] = +(t.fiche?.rondes ?? 0); }
+      } else if (type === 'cl') {
+        const c = parseClassement(await lireFFE(pResultats(arg, 'Cl')));
+        const avant = await env.CACHE.get('r:' + arg, 'json');
+        if (!c) { e.res[arg] = { t: Date.now(), absent: true }; }
+        else {
+          // Joueurs du club : par leur nom (liste du club) ou par la colonne club du classement
+          const club = cle(cfg.clubNom), m = membres();
+          const lignes = c.lignes.filter((l) => m.has(cle(l.nom)) || (club && cle(l.club).includes(club)));
+          const total = Math.max(e.rondes[arg] || 0, c.ronde + 1, avant?.rondes?.length ?? 0);
+          const r = {
+            t: Date.now(), ronde: c.ronde, total, participants: c.lignes.length, noms: lignes.map((l) => cle(l.nom)),
+            classement: { entetes: c.entetes, lignes: lignes.map((l) => l.cols) },
+            rondes: Array.from({ length: total }, (_, k) => avant?.rondes?.[k] ?? { n: k + 1, etat: 'avenir', parties: [] }),
+          };
+          e.res[arg] = r;
+          // Rondes à relire : jusqu'à celle qui suit la dernière jouée, sauf celles déjà terminées.
+          // Classement publié sans joueur du club : rien à suivre (sauf avant la 1re ronde, où il est encore vide).
+          if (lignes.length || !c.ronde) {
+            const aLire = [];
+            for (let k = 1; k <= Math.min(c.ronde + 1, total); k++) if (r.rondes[k - 1].etat !== 'jouee') aLire.push(`ronde:${arg}:${k}`);
+            e.file.splice(1, 0, ...aLire);
+          }
+        }
+      } else if (type === 'ronde') {
+        const r = e.res[arg];
+        const ronde = parseRonde(await lireFFE(pResultats(arg, String(n).padStart(2, '0'))));
+        const m = membres(r);
+        const parties = ronde.parties.map((x) => ({ ...x, db: m.has(cle(x.b)), dn: m.has(cle(x.n)) })).filter((x) => x.db || x.dn);
+        r.rondes[n - 1] = { n: +n, etat: ronde.etat, parties };
+        // Avant la 1re ronde, le classement est vide : les joueurs du club se repèrent dans les appariements
+        for (const x of parties) for (const [d, nom] of [[x.db, x.b], [x.dn, x.n]]) if (d && !r.noms.includes(cle(nom))) r.noms.push(cle(nom));
+      }
+      e.file.shift();
+      e.faits++;
+    } catch (err) {
+      e.file.shift();
+      e.echecs[item] = (e.echecs[item] ?? 0) + 1;
+      if (e.echecs[item] < 3) e.file.push(item);
+    }
+  }
+  if (!e.file.length) {
+    // Cycle terminé : résultats écrits une fois par tournoi, puis calendrier republié
+    for (const [ref, r] of Object.entries(e.res)) await env.CACHE.put('r:' + ref, JSON.stringify(r), { expirationTtl: JOURS_RESULTATS * 86400 });
+    await publier(env, cfg, maintenant);
+    e.res = {};
+  }
+  e.maj = maintenant;
+  await env.CACHE.put('cron:soir', JSON.stringify(e));
+  return { reste: e.file.length, faits: e.faits, actif: true };
+}
+
+// Assemble liste, fiches et résultats en une seule réponse, servie telle quelle par /api/tournois.
+// Un tournoi commencé peut quitter la liste FFE des annonces : il reste affiché tant qu'il est en cours.
+async function publier(env, cfg, maintenant = Date.now()) {
   const l = await env.CACHE.getWithMetadata('liste', 'json');
   if (!l.value) return;
+  const auj = paris(maintenant).jour;
+  const refs = new Set(l.value.map((t) => t.ref));
+  const ancien = (await env.CACHE.get('calendrier', 'json'))?.tournois ?? [];
+  const restes = ancien.filter((t) => !refs.has(t.ref) && enCours(t, auj)).map(({ ref, ville, dep, nom, debut }) => ({ ref, ville, dep, nom, debut }));
   const tournois = [];
-  for (const t of l.value) {
+  for (const t of [...restes, ...l.value]) {
     const fiche = await env.CACHE.get('f:' + t.ref, 'json');
-    tournois.push({ ...t, ligue: cfg.ligueDe[t.dep] ?? '', ...(fiche ? { fiche } : {}) });
+    const x = { ...t, ligue: cfg.ligueDe[t.dep] ?? '', ...(fiche ? { fiche } : {}) };
+    const r = enCours(x, auj) ? await env.CACHE.get('r:' + t.ref, 'json') : null;
+    if (r) x.resultats = r;
+    tournois.push(x);
   }
+  tournois.sort((a, b) => a.debut.localeCompare(b.debut));
   const t = l.metadata?.t ?? Date.now();
   await env.CACHE.put('calendrier', JSON.stringify({ t, ligues: liguesDe(cfg), tournois }), { metadata: { t } });
+}
+
+// Un passage de la tâche planifiée : le cycle de nuit d'abord, le suivi du soir s'il n'a rien fait
+export async function passage(env, maintenant = Date.now()) {
+  const nuit = await recharger(env, maintenant);
+  return nuit.actif ? { nuit } : { nuit, soir: await suivre(env, maintenant) };
 }
 const liguesDe = (cfg) => cfg.ligues.map((code) => ({ code, nom: LIGUES[code][0] }));
 
@@ -199,7 +362,7 @@ const json = (data, status = 200) =>
 
 export default {
   async scheduled(ev, env, ctx) {
-    ctx.waitUntil(recharger(env));
+    ctx.waitUntil(passage(env));
   },
   async fetch(req, env) {
     const u = new URL(req.url);
@@ -216,10 +379,10 @@ export default {
         const c = await env.CACHE.get('calendrier');
         return json(c ?? { t: 0, ligues: liguesDe(await config(env)), tournois: [] });
       }
-      // État de la recharge planifiée (diagnostic)
+      // État des cycles planifiés, nuit (liste et fiches) et soir (résultats des tournois en cours) : diagnostic
       if (u.pathname === '/api/cron') {
-        const e = await env.CACHE.get('cron:etat', 'json');
-        return json(e ? { debut: new Date(e.debut).toISOString(), maj: new Date(e.maj).toISOString(), faits: e.faits, reste: e.file.length, file: e.file.slice(0, 10), echecs: e.echecs } : { etat: 'jamais lancée' });
+        const resume = (e) => (e ? { debut: new Date(e.debut).toISOString(), maj: new Date(e.maj).toISOString(), faits: e.faits, reste: e.file.length, file: e.file.slice(0, 10), echecs: e.echecs } : { etat: 'jamais lancée' });
+        return json({ nuit: resume(await env.CACHE.get('cron:etat', 'json')), soir: resume(await env.CACHE.get('cron:soir', 'json')) });
       }
       return json({ erreur: 'inconnu' }, 404);
     } catch (e) {

@@ -7,6 +7,12 @@ window.CONFIG = {
   ligues: ['BRE', 'PDL', 'NOR'],
   // Tournois jeunes (championnats U10, U12…, « Open Jeunes ») affichés à la première visite : false = masqués (chaque visiteur peut les afficher)
   jeunes: false,
+  // Club suivi dans les tournois en cours : numéro FFE (ListeJoueurs.aspx?Action=JOUEURCLUBREF&ClubRef=…) et nom court.
+  // Les joueurs sont repérés par leur nom (liste du club) ou par la colonne club du classement (qui doit contenir clubNom).
+  club: 1918,
+  clubNom: 'Domloup',
+  // Image du dossier public/ affichée devant le titre ('' pour ne pas en afficher)
+  logo: 'logo.png',
   // Couleurs : bandeau du haut, couleur d'accent, liens et boutons
   couleurs: { entete: '#161616', accent: '#f6c500', bouton: '#0070c0' },
 };

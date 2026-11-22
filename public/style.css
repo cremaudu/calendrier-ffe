@@ -2,9 +2,11 @@
 @media (prefers-color-scheme: dark) { :root { --fond:#12151b; --carte:#1c212b; --txt:#e8eaf0; --gris:#9aa3b2; --trait:#2e3542; --bleu:#5aa9e6; } }
 * { box-sizing: border-box; }
 body { margin:0; font:16px/1.4 system-ui,sans-serif; background:var(--fond); color:var(--txt); }
-header { position:sticky; top:0; z-index:5; background:var(--noir); color:#fff; padding:10px 16px; display:flex; align-items:baseline; gap:4px 10px; flex-wrap:wrap; border-bottom:3px solid var(--jaune); }
+header { position:sticky; top:0; z-index:5; background:var(--noir); color:#fff; padding:6px 16px; display:flex; align-items:center; gap:10px; border-bottom:3px solid var(--jaune); }
+header img { height:36px; background:#fff; border-radius:6px; padding:2px; }
+header img[hidden] { display:none; }
 h1 { font-size:18px; margin:0; }
-#sous-titre { font-size:13px; color:#ffffffb8; }
+#sous-titre { display:block; font-size:13px; color:#ffffffb8; }
 main { padding:12px 16px 24px; max-width:720px; margin:auto; }
 a { color:var(--bleu); }
 .note { color:var(--gris); font-size:13px; }
@@ -34,3 +36,18 @@ details.tournoi[open] summary { border-bottom:1px solid var(--trait); }
 .fiche tr + tr > * { border-top:1px solid var(--trait); }
 .fiche h3 { font-size:14px; margin:14px 0 4px; }
 .annonce { white-space:pre-line; font-size:14px; margin:0; overflow-wrap:anywhere; }
+h2.section { font-size:17px; margin:22px 0 8px; padding-bottom:4px; border-bottom:2px solid var(--jaune); }
+h2.section small { font-size:13px; font-weight:400; color:var(--gris); margin-left:4px; }
+h2.section + h2.mois { margin-top:10px; }
+.badge.fini { background:var(--trait); color:var(--txt); }
+.fiche h4 { font-size:14px; margin:12px 0 4px; display:flex; flex-wrap:wrap; align-items:baseline; gap:2px 8px; }
+.fiche h4 small { font-weight:400; color:var(--gris); font-size:12px; }
+.fiche table.papi { margin-bottom:4px; }
+.fiche table.papi th { width:auto; font-size:12px; padding:3px 6px 3px 0; }
+.fiche table.papi td { padding:4px 6px 4px 0; }
+.fiche table.papi small { color:var(--gris); font-size:12px; white-space:nowrap; }
+.parties .ech { color:var(--gris); width:28px; }
+.parties .res { white-space:nowrap; text-align:center; font-weight:600; width:52px; }
+.parties td.club { font-weight:600; }
+.ronde.grise { opacity:.45; }
+.ronde.grise h4 { font-weight:400; }

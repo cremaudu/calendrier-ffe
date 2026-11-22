@@ -1,6 +1,6 @@
 // Coquille hors ligne : réseau d'abord, cache en secours (le calendrier lui-même est gardé par app.js dans localStorage).
-const C = 'calendrier-ffe-v1';
-const SHELL = ['/', '/app.js', '/config.js', '/style.css', '/manifest.webmanifest', '/icon.svg'];
+const C = 'calendrier-ffe-v3';
+const SHELL = ['/', '/app.js', '/config.js', '/style.css', '/manifest.webmanifest', '/icon.svg', '/logo.png'];
 self.addEventListener('install', (e) => e.waitUntil(caches.open(C).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting())));
 self.addEventListener('activate', (e) => e.waitUntil(self.clients.claim()));
 self.addEventListener('fetch', (e) => {
