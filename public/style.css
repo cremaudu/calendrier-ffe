@@ -22,9 +22,9 @@ input[type=search] { font:inherit; width:100%; padding:9px; border:1px solid var
 .option input { width:18px; height:18px; margin:0; accent-color:var(--bleu); }
 h2.mois { font-size:13px; text-transform:uppercase; letter-spacing:.05em; color:var(--gris); margin:20px 0 6px; }
 details.tournoi { background:var(--carte); border-radius:10px; margin-bottom:8px; box-shadow:0 1px 2px #0002; }
-details.tournoi summary { list-style:none; display:flex; gap:12px; padding:10px 12px; cursor:pointer; }
-details.tournoi summary::-webkit-details-marker { display:none; }
-details.tournoi[open] summary { border-bottom:1px solid var(--trait); }
+details.tournoi > summary { list-style:none; display:flex; gap:12px; padding:10px 12px; cursor:pointer; }
+details.tournoi > summary::-webkit-details-marker { display:none; }
+details.tournoi[open] > summary { border-bottom:1px solid var(--trait); }
 .date { flex:none; width:86px; font-weight:600; font-size:14px; }
 .date small, .titre small { display:block; font-weight:400; color:var(--gris); font-size:13px; }
 .titre { flex:1; min-width:0; overflow-wrap:anywhere; }
@@ -49,5 +49,12 @@ h2.section + h2.mois { margin-top:10px; }
 .parties .ech { color:var(--gris); width:28px; }
 .parties .res { white-space:nowrap; text-align:center; font-weight:600; width:52px; }
 .parties td.club { font-weight:600; }
+/* Blocs repliables d'un tournoi en cours (rondes, fiche) : flèche devant le titre */
+details.pli > summary { list-style:none; cursor:pointer; }
+details.pli > summary::-webkit-details-marker { display:none; }
+details.pli > summary > :is(h3, h4) { display:flex; flex-wrap:wrap; align-items:baseline; gap:2px 8px; }
+details.pli > summary > :is(h3, h4)::before { content:'▸'; display:inline-block; width:12px; color:var(--gris); transition:transform .15s; }
+details.pli[open] > summary > :is(h3, h4)::before { transform:rotate(90deg); }
+div.ronde h4 { padding-left:20px; }
 .ronde.grise { opacity:.45; }
 .ronde.grise h4 { font-weight:400; }

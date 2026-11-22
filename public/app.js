@@ -21,6 +21,7 @@ let ligue = lire('ligue', '');
 let jeunes = lire('jeunes', CFG.jeunes ?? false); // tournois jeunes affichés
 let etat = '';
 const ouverts = new Set();
+const plisOuverts = new Set(); // rondes et fiches dépliées (« ref:ronde », « ref:fiche »), pour qu'un nouveau rendu ne les referme pas
 
 // Dates ISO (AAAA-MM-JJ) en clair, à midi pour éviter tout décalage horaire
 const jour = (iso, o = { weekday: 'short', day: 'numeric', month: 'short' }) => new Date(iso + 'T12:00:00').toLocaleDateString('fr-FR', o);
@@ -88,15 +89,19 @@ function suivi(t) {
   }
   for (const ro of r.rondes ?? []) {
     const grise = ro.etat === 'avenir' || ro.etat === 'appariee';
-    h += `<div class="ronde${grise ? ' grise' : ''}"><h4>Ronde ${ro.n}<small>${ETATS[ro.etat] ?? ''}${ro.etat !== 'avenir' ? ` · <a href="${esc(ffe(t, String(ro.n).padStart(2, '0')))}" target="_blank" rel="noopener">toutes les parties ›</a>` : ''}</small></h4>`;
-    if (ro.parties.length) {
-      const j = (nom, elo, d) => `<td class="${d ? 'club' : ''}">${esc(nom)}${elo ? ` <small>${esc(elo)}</small>` : ''}</td>`;
-      h += `<table class="papi parties">${ro.parties.map((p) => `<tr><td class="ech">${esc(p.e)}</td>${j(p.b, p.eb, p.db)}<td class="res">${esc(p.r)}</td>${j(p.n, p.en, p.dn)}</tr>`).join('')}</table>`;
-    }
-    h += '</div>';
+    const np = ro.parties.length, cle = `${t.ref}:${ro.n}`;
+    const titre = `<h4>Ronde ${ro.n}<small>${ETATS[ro.etat] ?? ''}${np ? ` · ${np} partie${np > 1 ? 's' : ''}` : ''}${ro.etat !== 'avenir' ? ` · <a href="${esc(ffe(t, String(ro.n).padStart(2, '0')))}" target="_blank" rel="noopener">toutes les parties ›</a>` : ''}</small></h4>`;
+    if (!np) { h += `<div class="ronde${grise ? ' grise' : ''}">${titre}</div>`; continue; }
+    // Rondes avec parties : repliées par défaut, ouvertes d'un clic sur leur titre
+    const j = (nom, elo, d) => `<td class="${d ? 'club' : ''}">${esc(nom)}${elo ? ` <small>${esc(elo)}</small>` : ''}</td>`;
+    h += `<details class="pli ronde${grise ? ' grise' : ''}" data-pli="${cle}" ${plisOuverts.has(cle) ? 'open' : ''}><summary>${titre}</summary>
+      <table class="papi parties">${ro.parties.map((p) => `<tr><td class="ech">${esc(p.e)}</td>${j(p.b, p.eb, p.db)}<td class="res">${esc(p.r)}</td>${j(p.n, p.en, p.dn)}</tr>`).join('')}</table></details>`;
   }
   return h + `<p class="note">Résultats relus ${esc(quand(r.t))}.</p>`;
 }
+
+// Tournoi en cours : la fiche, moins utile une fois le tournoi commencé, est repliée par défaut
+const plie = (cle, titre, contenu) => `<details class="pli" data-pli="${cle}" ${plisOuverts.has(cle) ? 'open' : ''}><summary>${titre}</summary>${contenu}</details>`;
 
 function ligne(t, auj) {
   const f = t.fiche, r = t.resultats, cours = enCours(t, auj);
@@ -109,7 +114,7 @@ function ligne(t, auj) {
   return `<details class="tournoi" data-ref="${t.ref}" ${ouverts.has(t.ref) ? 'open' : ''}>
     <summary><span class="date">${esc(jour(t.debut))}${fin ? `<small>au ${esc(jour(fin))}</small>` : ''}</span>
       <span class="titre"><b>${esc(t.nom)}</b>${badge}<small>${esc(resume.filter(Boolean).join(' · '))}</small></span></summary>
-    <div class="fiche">${cours ? suivi(t) + '<h3>Fiche du tournoi</h3>' : ''}${fiche(t)}</div></details>`;
+    <div class="fiche">${cours ? suivi(t) + plie(`${t.ref}:fiche`, '<h3>Fiche du tournoi</h3>', fiche(t)) : fiche(t)}</div></details>`;
 }
 
 function rendre() {
@@ -172,6 +177,8 @@ $('jeunes').onchange = (e) => { jeunes = e.target.checked; ecrire('jeunes', jeun
 $('liste').addEventListener('toggle', (e) => {
   const ref = +e.target.dataset?.ref;
   if (ref) e.target.open ? ouverts.add(ref) : ouverts.delete(ref);
+  const pli = e.target.dataset?.pli;
+  if (pli) e.target.open ? plisOuverts.add(pli) : plisOuverts.delete(pli);
 }, true);
 rendre();
 charger();
