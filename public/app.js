@@ -76,30 +76,70 @@ const nbClub = (t) => t.resultats?.classement?.lignes?.length || t.resultats?.no
 const ETATS = { jouee: 'terminée', encours: 'en cours', appariee: 'appariée, pas commencée', avenir: 'pas encore appariée' };
 const ffe = (t, a) => `https://www.echecs.asso.fr/Resultats.aspx?URL=Tournois/Id/${t.ref}/${t.ref}&Action=${a}`;
 
-// Tournoi en cours : classement et parties des joueurs du club (relus chaque soir à 20h)
+// Tournoi en cours : classement et parties des joueurs du club (relus chaque soir à 20h).
+// Bouton « Actualiser » (tournoi en cours, pas dans l'historique) sur la ronde appariée ou en cours, et sur la première
+// pas encore appariée : le relais relit sa page FFE, et le classement si une ronde vient de se terminer.
 function suivi(t) {
-  const r = t.resultats;
+  const r = t.resultats, vivant = !t.termine;
   let h = `<h3>Joueurs ${esc(DE_CLUB)}</h3>`;
-  if (!r) return h + '<p class="note">Résultats pas encore relus (chaque soir vers 20h).</p>';
-  if (r.absent) return h + `<p class="note">Pas de résultats publiés sur le site FFE · relu ${esc(quand(r.t))}.</p>`;
-  if (!nbClub(t)) return h + `<p class="note">Aucun joueur ${esc(DE_CLUB)} dans ce tournoi · relu ${esc(quand(r.t))}.</p>`;
+  const n = nbClub(t);
+  if (!r) h += '<p class="note">Résultats pas encore relus (chaque soir vers 20h).</p>';
+  else if (r.absent) h += `<p class="note">Pas de résultats publiés sur le site FFE · relu ${esc(quand(r.t))}.</p>`;
+  else if (!n) h += `<p class="note">Aucun joueur ${esc(DE_CLUB)} repéré pour l'instant · relu ${esc(quand(r.t))}.</p>`;
+  // Rondes : celles des résultats, sinon d'après la fiche (toutes pas encore appariées)
+  const rondes = r?.rondes?.length ? r.rondes : Array.from({ length: Math.max(+(t.fiche?.rondes ?? 0), 1) }, (_, k) => ({ n: k + 1, etat: 'avenir', parties: [] }));
+  const cible = rondes.findIndex((ro) => ro.etat === 'avenir') + 1;
+  const actualisable = (ro) => vivant && (ro.etat === 'encours' || ro.etat === 'appariee' || ro.n === cible);
+  if (!n) {
+    // Joueurs du club pas encore repérés : seule la ronde à actualiser est proposée
+    if (!vivant || !cible) return h;
+    return h + rondes.filter(actualisable).map((ro) => rondeHtml(t, ro, true)).join('');
+  }
   const c = r.classement;
   if (c?.lignes?.length && r.ronde) {
     h += `<h4>Classement après la ronde ${r.ronde}<small>${r.participants} joueurs · <a href="${esc(ffe(t, 'Cl'))}" target="_blank" rel="noopener">complet ›</a></small></h4>
       <table class="papi"><tr>${c.entetes.map((e) => `<th>${esc(e)}</th>`).join('')}</tr>
       ${c.lignes.map((l) => `<tr>${l.map((v) => `<td>${esc(v)}</td>`).join('')}</tr>`).join('')}</table>`;
   }
-  for (const ro of r.rondes ?? []) {
-    const grise = ro.etat === 'avenir' || ro.etat === 'appariee';
-    const np = ro.parties.length, cle = `${t.ref}:${ro.n}`;
-    const titre = `<h4>Ronde ${ro.n}<small>${ETATS[ro.etat] ?? ''}${np ? ` · ${np} partie${np > 1 ? 's' : ''}` : ''}${ro.etat !== 'avenir' ? ` · <a href="${esc(ffe(t, String(ro.n).padStart(2, '0')))}" target="_blank" rel="noopener">toutes les parties ›</a>` : ''}</small></h4>`;
-    if (!np) { h += `<div class="ronde${grise ? ' grise' : ''}">${titre}</div>`; continue; }
-    // Rondes avec parties : repliées par défaut, ouvertes d'un clic sur leur titre
-    const j = (nom, elo, d) => `<td class="${d ? 'club' : ''}">${esc(nom)}${elo ? ` <small>${esc(elo)}</small>` : ''}</td>`;
-    h += `<details class="pli ronde${grise ? ' grise' : ''}" data-pli="${cle}" ${plisOuverts.has(cle) ? 'open' : ''}><summary>${titre}</summary>
-      <table class="papi parties">${ro.parties.map((p) => `<tr><td class="ech">${esc(p.e)}</td>${j(p.b, p.eb, p.db)}<td class="res">${esc(p.r)}</td>${j(p.n, p.en, p.dn)}</tr>`).join('')}</table></details>`;
-  }
+  h += rondes.map((ro) => rondeHtml(t, ro, actualisable(ro))).join('');
   return h + `<p class="note">Résultats relus ${esc(quand(r.t))}.</p>`;
+}
+
+const enLecture = new Set(), erreurs = new Map(); // actualisations en cours / en échec, par « ref:ronde »
+function rondeHtml(t, ro, actu) {
+  const grise = ro.etat === 'avenir' || ro.etat === 'appariee';
+  const np = ro.parties.length, cle = `${t.ref}:${ro.n}`;
+  const infos = [ETATS[ro.etat] ?? '', np && `${np} partie${np > 1 ? 's' : ''}`, ro.lu && `relue ${quand(ro.lu)}`].filter(Boolean).map(esc).join(' · ');
+  const lien = ro.etat !== 'avenir' ? ` · <a href="${esc(ffe(t, String(ro.n).padStart(2, '0')))}" target="_blank" rel="noopener">toutes les parties ›</a>` : '';
+  const erreur = erreurs.has(cle) ? ` · <span class="err">${esc(erreurs.get(cle))}</span>` : '';
+  const bouton = actu ? `<button class="actu" data-ref="${t.ref}" data-ronde="${ro.n}" ${enLecture.has(cle) ? 'disabled' : ''}>${enLecture.has(cle) ? 'Lecture FFE…' : '↻ Actualiser'}</button>` : '';
+  const titre = `<h4><span class="nom">Ronde ${ro.n}</span><small>${infos}${lien}${erreur}</small>${bouton}</h4>`;
+  if (!np) return `<div class="ronde${grise ? ' grise' : ''}">${titre}</div>`;
+  // Rondes avec parties : repliées par défaut, ouvertes d'un clic sur leur titre
+  const j = (nom, elo, d) => `<td class="${d ? 'club' : ''}">${esc(nom)}${elo ? ` <small>${esc(elo)}</small>` : ''}</td>`;
+  return `<details class="pli ronde${grise ? ' grise' : ''}" data-pli="${cle}" ${plisOuverts.has(cle) ? 'open' : ''}><summary>${titre}</summary>
+    <table class="papi parties">${ro.parties.map((p) => `<tr><td class="ech">${esc(p.e)}</td>${j(p.b, p.eb, p.db)}<td class="res">${esc(p.r)}</td>${j(p.n, p.en, p.dn)}</tr>`).join('')}</table></details>`;
+}
+
+// Actualisation d'une ronde : le relais relit la page FFE (de 1 s à 1 min selon la charge du site FFE)
+async function actualiserRonde(ref, n) {
+  const cle = `${ref}:${n}`;
+  if (enLecture.has(cle)) return;
+  enLecture.add(cle);
+  erreurs.delete(cle);
+  rendre();
+  try {
+    const r = await fetch(`/api/actualiser?ref=${ref}&ronde=${n}`, { method: 'POST' });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.erreur || 'erreur ' + r.status);
+    const t = cal?.tournois?.find((x) => x.ref === ref);
+    if (t) { t.resultats = d; ecrire('calendrier', cal); }
+    if (d.rondes?.[n - 1]?.parties?.length) plisOuverts.add(cle); // parties trouvées : ronde dépliée
+  } catch (e) {
+    erreurs.set(cle, navigator.onLine === false ? 'hors ligne' : e.message || 'réseau indisponible');
+  }
+  enLecture.delete(cle);
+  rendre();
 }
 
 // Tournoi en cours : la fiche, moins utile une fois le tournoi commencé, est repliée par défaut
@@ -191,6 +231,13 @@ async function charger() {
 
 $('q').oninput = rendre;
 $('jeunes').onchange = (e) => { jeunes = e.target.checked; ecrire('jeunes', jeunes); rendre(); };
+// Bouton dans le titre d'une ronde repliable : actualise sans déplier ni replier
+$('liste').addEventListener('click', (e) => {
+  const b = e.target.closest('button.actu');
+  if (!b) return;
+  e.preventDefault();
+  actualiserRonde(+b.dataset.ref, +b.dataset.ronde);
+});
 $('liste').addEventListener('toggle', (e) => {
   const ref = +e.target.dataset?.ref;
   if (ref) e.target.open ? ouverts.add(ref) : ouverts.delete(ref);

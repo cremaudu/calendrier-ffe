@@ -127,6 +127,21 @@ export function parseRonde(html) {
   return { etat: !parties.length ? 'avenir' : n === parties.length ? 'jouee' : n ? 'encours' : 'appariee', parties };
 }
 
+// Joueurs du club dans un classement : par leur nom (liste du club) ou par la colonne club (contenant clubNom)
+function classementClub(c, membres, clubNom) {
+  const club = cle(clubNom);
+  const lignes = c.lignes.filter((l) => membres.has(cle(l.nom)) || (club && cle(l.club).includes(club)));
+  return { ronde: c.ronde, participants: c.lignes.length, noms: lignes.map((l) => cle(l.nom)), classement: { entetes: c.entetes, lignes: lignes.map((l) => l.cols) } };
+}
+// Parties d'une ronde où joue un joueur du club (db / dn : blancs / noirs du club). Les noms trouvés s'ajoutent
+// à r.noms : avant la 1re ronde, le classement est vide et les joueurs du club se repèrent dans les appariements.
+function rondeClub(r, n, lue, membres, lu) {
+  const parties = lue.parties.map((x) => ({ ...x, db: membres.has(cle(x.b)), dn: membres.has(cle(x.n)) })).filter((x) => x.db || x.dn);
+  r.rondes[n - 1] = { n, etat: lue.etat, parties, lu };
+  for (const x of parties) for (const [d, nom] of [[x.db, x.b], [x.dn, x.n]]) if (d && !r.noms.includes(cle(nom))) r.noms.push(cle(nom));
+}
+const pRonde = (ref, n) => pResultats(ref, String(n).padStart(2, '0'));
+
 // Liste des joueurs d'un club (40 par page ; la flèche « page suivante » manque sur la dernière)
 export function parseClub(html) {
   const noms = [...html.matchAll(/<tr class=liste_(?:clair|fonce)>([\s\S]*?)<\/tr>/g)].map((m) => decode(cells(m[1])[1] ?? '')).filter(Boolean);
@@ -284,19 +299,15 @@ export async function suivre(env, maintenant = Date.now()) {
         const avant = await env.CACHE.get('r:' + arg, 'json');
         if (!c) { e.res[arg] = { t: Date.now(), absent: true }; }
         else {
-          // Joueurs du club : par leur nom (liste du club) ou par la colonne club du classement
-          const club = cle(cfg.clubNom), m = membres();
-          const lignes = c.lignes.filter((l) => m.has(cle(l.nom)) || (club && cle(l.club).includes(club)));
           const total = Math.max(e.rondes[arg] || 0, c.ronde + 1, avant?.rondes?.length ?? 0);
           const r = {
-            t: Date.now(), ronde: c.ronde, total, participants: c.lignes.length, noms: lignes.map((l) => cle(l.nom)),
-            classement: { entetes: c.entetes, lignes: lignes.map((l) => l.cols) },
+            t: Date.now(), clLu: Date.now(), total, ...classementClub(c, membres(), cfg.clubNom),
             rondes: Array.from({ length: total }, (_, k) => avant?.rondes?.[k] ?? { n: k + 1, etat: 'avenir', parties: [] }),
           };
           e.res[arg] = r;
           // Rondes à relire : jusqu'à celle qui suit la dernière jouée, sauf celles déjà terminées.
           // Classement publié sans joueur du club : rien à suivre (sauf avant la 1re ronde, où il est encore vide).
-          if (lignes.length || !c.ronde) {
+          if (r.noms.length || !c.ronde) {
             const aLire = [];
             for (let k = 1; k <= Math.min(c.ronde + 1, total); k++) if (r.rondes[k - 1].etat !== 'jouee') aLire.push(`ronde:${arg}:${k}`);
             e.file.splice(1, 0, ...aLire);
@@ -304,12 +315,7 @@ export async function suivre(env, maintenant = Date.now()) {
         }
       } else if (type === 'ronde') {
         const r = e.res[arg];
-        const ronde = parseRonde(await lireFFE(pResultats(arg, String(n).padStart(2, '0'))));
-        const m = membres(r);
-        const parties = ronde.parties.map((x) => ({ ...x, db: m.has(cle(x.b)), dn: m.has(cle(x.n)) })).filter((x) => x.db || x.dn);
-        r.rondes[n - 1] = { n: +n, etat: ronde.etat, parties };
-        // Avant la 1re ronde, le classement est vide : les joueurs du club se repèrent dans les appariements
-        for (const x of parties) for (const [d, nom] of [[x.db, x.b], [x.dn, x.n]]) if (d && !r.noms.includes(cle(nom))) r.noms.push(cle(nom));
+        rondeClub(r, +n, parseRonde(await lireFFE(pRonde(arg, n))), membres(r), Date.now());
       }
       e.file.shift();
       e.faits++;
@@ -328,6 +334,45 @@ export async function suivre(env, maintenant = Date.now()) {
   e.maj = maintenant;
   await env.CACHE.put('cron:soir', JSON.stringify(e));
   return { reste: e.file.length, faits: e.faits, actif: true };
+}
+
+/* ---------- Actualisation d'une ronde à la demande ----------
+   Bouton « Actualiser » d'un tournoi en cours : relit la page FFE d'une ronde appariée ou en cours, ou de la
+   première pas encore appariée (ses appariements peuvent être publiés avant le suivi de 20h). Le classement
+   n'est relu que si une ronde terminée est plus récente que lui. Au plus une lecture FFE toutes les 2 minutes
+   par page : les autres demandes reçoivent la dernière lecture. */
+const DELAI_DIRECT = 120000;
+class Refus extends Error { constructor(status, msg) { super(msg); this.status = status; } }
+
+export async function actualiser(env, ref, n, maintenant = Date.now()) {
+  const cfg = await config(env);
+  const t = (await env.CACHE.get('calendrier', 'json'))?.tournois?.find((x) => x.ref === ref);
+  if (!t || !enCours(t, paris(maintenant).jour)) throw new Refus(404, "ce tournoi n'est pas en cours");
+  let r = await env.CACHE.get('r:' + ref, 'json');
+  // Pas encore de résultats suivis (fichier FFE absent au dernier suivi) : rondes d'après la fiche
+  if (!r?.rondes) r = { t: r?.t ?? maintenant, ronde: 0, participants: 0, noms: [], classement: { entetes: [], lignes: [] }, rondes: [] };
+  while (r.rondes.length < Math.max(+(t.fiche?.rondes ?? 0), 1)) r.rondes.push({ n: r.rondes.length + 1, etat: 'avenir', parties: [] });
+  r.total = r.rondes.length;
+  const ro = r.rondes[n - 1];
+  const cible = r.rondes.findIndex((x) => x.etat === 'avenir') + 1;
+  if (!ro || !(ro.etat === 'encours' || ro.etat === 'appariee' || n === cible)) throw new Refus(400, 'cette ronde ne peut pas être actualisée');
+  const membres = new Set([...((await env.CACHE.get('club', 'json')) ?? []), ...r.noms]);
+  let change = false;
+  if (maintenant - (ro.lu ?? 0) >= DELAI_DIRECT) {
+    rondeClub(r, n, parseRonde(await lireFFE(pRonde(ref, n))), membres, maintenant);
+    change = true;
+  }
+  // Classement « après la ronde n-1 » tant que la ronde n n'est pas terminée : relu quand une ronde terminée le dépasse
+  const terminee = Math.max(0, ...r.rondes.filter((x) => x.etat === 'jouee').map((x) => x.n));
+  if (terminee > r.ronde && maintenant - (r.clLu ?? 0) >= DELAI_DIRECT) {
+    const c = parseClassement(await lireFFE(pResultats(ref, 'Cl')));
+    r.clLu = maintenant;
+    if (c) { const k = classementClub(c, membres, cfg.clubNom); Object.assign(r, k, { noms: [...new Set([...r.noms, ...k.noms])] }); }
+    change = true;
+  }
+  delete r.absent;
+  if (change) await env.CACHE.put('r:' + ref, JSON.stringify(r), { expirationTtl: JOURS_RESULTATS * 86400 });
+  return r;
 }
 
 // Saison d'une date ISO (« 2026-2027 »), qui commence le jour debutSaison (« MM-JJ ») de config.js
@@ -396,10 +441,21 @@ export default {
           icons: [{ src: 'icon.svg', sizes: 'any', type: 'image/svg+xml', purpose: 'any' }],
         }), { headers: { 'Content-Type': 'application/manifest+json; charset=utf-8' } });
       }
-      // Calendrier assemblé par la tâche planifiée ; tant qu'il n'existe pas : liste vide, t = 0
+      // Calendrier assemblé par la tâche planifiée ; tant qu'il n'existe pas : liste vide, t = 0.
+      // Résultats des tournois en cours : ceux de r:<ref>, plus récents si une ronde a été actualisée depuis.
       if (u.pathname === '/api/tournois') {
-        const c = await env.CACHE.get('calendrier');
-        return json(c ?? { t: 0, ligues: liguesDe(await config(env)), tournois: [] });
+        const c = await env.CACHE.get('calendrier', 'json');
+        if (!c) return json({ t: 0, ligues: liguesDe(await config(env)), tournois: [] });
+        for (const t of c.tournois) if (t.resultats) t.resultats = (await env.CACHE.get('r:' + t.ref, 'json')) ?? t.resultats;
+        return json(c);
+      }
+      // Actualisation d'une ronde (POST /api/actualiser?ref=73696&ronde=2) : résultats du tournoi à jour
+      if (u.pathname === '/api/actualiser') {
+        if (req.method !== 'POST') return json({ erreur: 'POST attendu' }, 405);
+        const ref = +u.searchParams.get('ref'), n = +u.searchParams.get('ronde');
+        if (!Number.isInteger(ref) || ref <= 0 || !Number.isInteger(n) || n < 1 || n > 99) return json({ erreur: 'paramètres invalides' }, 400);
+        try { return json(await actualiser(env, ref, n)); }
+        catch (e) { if (e instanceof Refus) return json({ erreur: e.message }, e.status); throw e; }
       }
       // État des cycles planifiés, nuit (liste et fiches) et soir (résultats des tournois en cours) : diagnostic
       if (u.pathname === '/api/cron') {

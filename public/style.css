@@ -63,5 +63,7 @@ details.pli > summary > :is(h3, h4) { display:flex; flex-wrap:wrap; align-items:
 details.pli > summary > :is(h3, h4)::before { content:'▸'; display:inline-block; width:12px; color:var(--gris); transition:transform .15s; }
 details.pli[open] > summary > :is(h3, h4)::before { transform:rotate(90deg); }
 div.ronde h4 { padding-left:20px; }
-.ronde.grise { opacity:.45; }
+.ronde.grise .nom, .ronde.grise small, .ronde.grise table { opacity:.45; }
+button.actu { font:inherit; font-size:12px; font-weight:600; padding:2px 9px; margin-left:auto; border:1px solid var(--bleu); border-radius:6px; background:transparent; color:var(--bleu); cursor:pointer; white-space:nowrap; }
+button.actu:disabled { opacity:.6; cursor:progress; }
 .ronde.grise h4 { font-weight:400; }
